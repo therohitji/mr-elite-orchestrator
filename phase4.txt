@@ -1,0 +1,96 @@
+Phase 4 (Execution)
+The Atom has survived the Planner, the Policy Judge, and the Security Guard. Now, and only now, do we allow it to touch
+the real world.
+Here is the implementation plan for the Execution Layer.
+1. The Architecture: The "Central Dispatcher"
+We do not let Atoms just "run." We hand them to a Dispatcher (a specialized Python Class).
+The Dispatcher acts like a traffic controller at an airport. It looks at the Atom's tag and directs it to one of three runways:
+Tools, Agents, or Workflows.
+Runway A: Dumb Tools (Fast & Deterministic)
+What: Simple Python functions (APIs, Database lookups).
+Use Case: check_budget , stripe_pay , search_db .
+Execution: 100% Code. Zero AI. milliseconds latency.
+Runway B: Smart Agents (Slow & Creative)
+What: Specialized LLM loops.
+Use Case: draft_contract , analyze_sentiment , summarize_report .
+Execution: Spins up a focused LLM Session (e.g., "You are an HR Writer") 1.
+Runway C: Workflows (Structured Processes)
+What: Pre-defined scripts or complex sub-graphs.
+Use Case: onboard_employee (Trigger email + Invite to Slack + Add to Jira).
+Execution: Triggers a defined sequence in LangGraph or a strict Python script.
+2. Development Plan: How to Build the Dispatcher
+This is the code logic you need to implement.
+Step 1: The Dispatcher Logic (The Switch)
+Create core/execution/dispatcher.py .
+Python
+from core.registry import TOOL_REGISTRY
+def execute_atom(atom):
+print(f"Executing Atom: {atom.id} | Tool: {atom.tool_name}")
+# 1. Lookup the Execution Handler from the Registry
+# (We defined this map back in the Atomization phase)
+handler_config = TOOL_REGISTRY.get(atom.tool_name)
+# 2. Route based on Type
+try:
+if handler_config["type"] == "CODE_TOOL":
+# Run Python Function directly
+result = handler_config["function"](**atom.tool_arguments)
+elif handler_config["type"] == "AI_AGENT":
+# Pass to LLM Sub-Agent
+Phase 4 (Execution)
+1result = run_agent_loop(atom, handler_config["system_prompt"])
+elif handler_config["type"] == "WORKFLOW":
+# Trigger a specific Sub-Graph
+result = handler_config["graph"].invoke(atom.tool_arguments)
+# 3. SUCCESS: Return the output
+return {"status": "SUCCESS", "output": result}
+except Exception as e:
+# 4. FAILURE: Catch errors safely
+return {"status": "ERROR", "error": str(e)}
+Step 2: The Feedback Loop (Crucial)
+Execution is useless if the system forgets what happened.
+Scenario: Atom 1 fetches "Salary Data". Atom 2 needs to read that data.
+The Fix: The Dispatcher must Write Back to the Global Context.
+Python
+# After execution...
+if response["status"] == "SUCCESS":
+# Save output to Memory so next atoms can see it
+# e.g., variable_name = "salary_data"
+global_context.update({atom.output_variable: response["output"]})
+# Log success for the Evaluation Layer
+log_execution(atom.id, "success", response["output"])
+3. What to Take Care of (Critical Engineering Risks)
+Building this layer is risky. Here are the 3 things that will break if you don't handle them now.
+Risk 1: The "Hanging Agent" (Timeouts)
+Problem: The draft_contract Agent gets stuck in a loop or the Stripe API hangs for 60 seconds. The whole system freezes.
+Solution: Implement Hard Timeouts.
+Code: Wrap every execution in a 30-second timer.Python
+try:
+result = func(**args, timeout=30)
+except TimeoutError:
+return "ERROR: Tool took too long."
+Risk 2: The "Hallucinated Argument" (Type Safety)
+Problem: The Stripe Tool expects amount as an Integer (500), but the LLM sent a String ("500 dollars"). The code
+crashes.
+Solution: Input Sanitization inside the Dispatcher.
+Code: Attempt to cast types before running.Python
+if tool_name == "stripe_pay":
+# Force integer
+args["amount"] = int(str(args["amount"]).replace(" dollars", ""))
+Phase 4 (Execution)
+2Risk 3: Error Propagation (The Crash)
+Problem: Atom 1 fails. Atom 2 depends on Atom 1. If you try to run Atom 2, it will crash because inputs are missing.
+Solution: Dependency Cascading.
+Logic:
+If Atom 1 Status = ERROR .
+Find all Atoms where dependencies contains Atom 1.
+Mark them as SKIPPED_DUE_TO_FAILURE .
+Do not attempt to run them.
+Summary of the Flow
+1. Dispatcher Receives Atom: It acts as the "Switchboard."
+2. Registry Lookup: It checks registry.py to see if this is Code (Tool) or AI (Agent).
+3. Execution: It runs the logic with a strict Timeout.
+4. Feedback: It saves the result (e.g., "Payment ID: 123") into the Global Context.
+5. Next Step: The System wakes up the next Atom in the queue.
+This completes the Execution Layer.
+Phase 4 (Execution)
+3

@@ -1,0 +1,680 @@
+Phase 1 (Classification)
+Section 1: Classification
+WHAT WE ARE CLASSIFYING (INTENT)
+Intent CategoryDescriptionRouting DestinationExample
+A. Conversational
+(CHAT)Casual interaction, no business state
+change.$\to$ Chat Node (Memory-
+aware LLM)"Hi, are you there?", "Who built
+you?"
+B. Knowledge
+Retrieval (QUERY)User wants information from company
+data/policy.$\to$ RAG Node (Vector
+Search)"What is our travel allowance
+policy?", "Did Client X pay?"
+C. Atomic Action
+(TASK)A single, unambiguous command.$\to$ Direct Execution (Single
+Agent)"Draft an email to John.", "Add
+this to Jira."
+D. Composite
+Outcome (GOAL)A high-level request requiring reasoning,
+multiple steps, or dependency
+management.$\to$ Deep Planning Engine
+(The core Mr. Elite logic)"Onboard the new hire.",
+"Handle the outage."
+Phase 1 (Classification)
+1➡️
+System Component: The Semantic Triage Engine
+Role: The Gateway Node for Mr. Elite.
+Objective: To deterministically and probabilistically categorize user input to minimize latency for simple tasks
+while reserving computational power for complex goals.
+1. The Core Logic Pipeline (The "Algorithm")
+We implement a Waterfall Classification Algorithm. The data flows through layers of increasing intelligence. We
+do not jump straight to the most expensive model.
+• Layer 1 (The Reflex): Deterministic Heuristics (O(1) execution time).
+• Layer 2 (The Brain): Semantic Analysis via LLM (Probabilistic classification).
+• Layer 3 (The Judge): Structural Validation (Schema enforcement).
+2. Component Breakdown & Implementation Logic
+A. Heuristic Filter (The "Reflex")
+What it is: A predefined set of Regex patterns and strict string matching rules.
+Why: To prevent wasting tokens on inputs that are strictly programmatic or conversational "noise."
+Implementation Logic:
+• Input Sanitization: Trim whitespace, normalize to lowercase.
+• Pattern Matching:
+◦ Greeting_Pattern : ["hi", "hello", "hey"] $\rightarrow$ Route directly to Chat Node.
+◦ System_Command_Pattern : ["/reset", "/logout", "/status"] $\rightarrow$ Route directly to System Ops Node.
+◦ Cancel_Pattern : ["stop", "cancel", "abort"] $\rightarrow$ Route to Interrupt Handler.
+• Technical Spec: Use Python’s re module. If a match is found, return immediately (Short-circuit). Do not call
+the LLM.
+B. Semantic Router (The "Brain")
+What it is: A specialized LLM call (using a small, fast model like gpt-4o-mini) tasked only with classification, not
+execution.
+How it works: It projects the user's vague language into one of our four fixed Intent Buckets1.
+The Buckets:
+1. CONVERSATIONAL : Non-functional banter.
+2. RETRIEVAL_RAG : Asking for existing data (Policy, Status, History).
+3. ATOMIC_TASK : A single action with no dependencies (e.g., "Draft email").
+4. COMPOSITE_GOAL : A multi-step workflow requiring the Planner (e.g., "Hire SDE").
+C. Complexity Score (The "Resource Allocator")
+What it is: A scalar value (1-10) determining how much "thinking time" (and cost) we allocate.
+Scoring Rubric (The Logic):
+• Score 1-3 (Low): Single tool required, no ambiguity. Action: Direct Execution.
+• Score 4-7 (Med): Multiple tools, but linear execution (Step 1 $\to$ Step 2). Action: Standard Planning.
+•
+Score 8-10 (High): High ambiguity, high risk, requires policy checks or human approval2. Action: "Deep Thought"
+Planning (Reflection Loops).
+Algorithm:
+The Semantic Router evaluates complexity based on:
+• Ambiguity: "Send it to him" (Who is him?) = High Score.
+• Criticality: "Delete database" = High Score (10).
+• Temporal Scope: "Monitor for next week" = Medium Score.
+D. Reasoning (The "Audit Trail")
+What it is: A required text field where the model explains why it chose the classification.
+Why: This is vital for the Evaluation Layer3. If the router misclassifies a "Fire Employee" request as a simple
+"Chat", we need to know why the model failed so we can fix the system prompt.
+Format: "User used imperative verb 'hire', implying state change. Request lacks candidate name, implying search
+step required. Therefore: Composite Goal."
+E. Domain Classification (The "Department Router")
+What it is: Mapping the request to a specific Domain Agent (The "Manager" 4).
+The Logic:
+Phase 1 (Classification)
+2We map intents to the specific subgraph responsible for that data.
+• "Schedule interview" $\to$ HR_DOMAIN
+• "Check burn rate" $\to$ FINANCE_DOMAIN
+• "Fix bug on login" $\to$ ENGINEERING_DOMAIN
+Implementation: If the confidence score for the domain is $<0.7$, route to GENERAL_MANAGER (Mr. Elite) to ask
+clarifying questions.
+CONTENT FOR CLASSIFICATION
+1. The Heuristic Filters (The "Fast Pass" Layer)
+Goal: Catch noise and simple interactions instantly without burning LLM costs.
+Implementation: Simple Python Regex or String Matching.
+Filter A: The Handshake (Greeting Filter)
+Logic: If input is purely social, skip logic engine.
+Pattern List: ['hi', 'hello', 'hey', 'good morning', 'yo', 'start'] (Case insensitive).
+Action: Route to Chat_Node (Simple response).
+Filter B: The Emergency Brake (Abort Filter)
+Logic: Immediate cessation of current agent activity.
+Pattern List: ['stop', 'cancel', 'abort', 'halt', 'terminate'] .
+Action: Trigger System_Interrupt exception.
+Filter C: The System Admin (Config Filter)
+Logic: Commands meant for the bot configuration, not business logic.
+Pattern List: ['/reset', '/config', '/status', '/debug', '/logout'] .
+Action: Route to System_Ops_Node .
+Filter D: The "Empty/Noise" Filter
+Logic: Catches accidental sends or gibberish.
+Pattern: Length < 3 chars AND not in "Greeting List".
+Action: Return "Please provide a command."
+2. The Intent Classifiers (The "Routing" Layer)
+Goal: Determine WHAT the user wants.
+Implementation: LLM System Prompt (Structured Output).
+Intent A: Conversational (CHAT)
+Definition: Interaction maintaining social rapport or context, no business function.
+Trigger: "Who are you?", "Tell me a joke", "Thanks."
+Intent B: Knowledge Retrieval (QUERY)
+Definition: Fetching existing data. No state change (Read-Only).
+Trigger: "What is...", "Show me...", "Who is...", "Check status of..."
+Intent C: Atomic Task (TASK)
+Definition: A single step action that does not require a plan.
+Trigger: "Send email to X", "Create ticket Y", "Schedule meeting Z."
+Intent D: Composite Goal (GOAL)
+Definition: A high-level outcome requiring orchestration, policy checks, or multi-step reasoning2222.
+Phase 1 (Classification)
+3Trigger: "Onboard X", "Handle the outage", "Prepare Q3 report", "Hire a dev."
+3. Complexity Scoring Factors (The "Thinking" Layer)
+Goal: Decide how much computing power/time to allocate.
+Implementation: LLM Rubric (Included in the Prompt).
+Factor 1: Step Count (Temporal)
+Low (1-3): Implies 1 action. ("Send email").
+High (8-10): Implies a sequence. ("Hire" -> Resume -> Interview -> Offer).
+Factor 2: Ambiguity (Information Gap)
+Low: All variables present. ("Email John at john@acme.com saying Hello").
+High: Missing variables. ("Email the client about the delay" -> Which client? Which delay?).
+Factor 3: Cross-Functionality (Tool Span)
+Low: Single Domain. (Only Slack).
+High: Multiple Domains. (Slack + Jira + HubSpot + Gmail).
+Factor 4: Consequence (Risk)
+Low: Reversible. (Drafting text).
+High: Irreversible/Expensive. (Sending money, deleting data, publishing public content).
+4. Domain Classifier Logic (The "Assignment" Layer)
+Goal: Route to the correct Specialist Agent3.
+Implementation: Keyword Mapping + Semantic Context.
+Domain A: HR & Talent ( HR_AGENT )
+Keywords: Hire, Interview, Resume, Candidate, Offer, Leave, Onboarding.
+Domain B: Finance & Legal ( FINANCE_AGENT )
+Keywords: Invoice, Budget, Salary, Payment, Contract, Tax, Burn rate.
+Domain C: Product & Eng ( DELIVERY_AGENT )
+Keywords: Jira, Ticket, Bug, Sprint, Release, Feature, Github, Downtime.
+Domain D: Communications/Admin ( COMMS_AGENT )
+Keywords: Email, Calendar, Schedule, Meeting, Inbox, Reminder.
+Domain E: General Manager ( MR_ELITE )
+Keywords: Everything else, or cross-domain requests.
+5. The "Code-Ready" Implementation Guide
+Here is exactly how you write this in your codebase.
+A. The Data Structure (Pydantic)
+Copy this into schemas.py
+Python
+from pydantic import BaseModel, Field
+from typing import Literal
+class ClassificationOutput(BaseModel):
+# The primary bucket
+intent: Literal["chat", "query", "task", "goal"]
+Phase 1 (Classification)
+4# The brain power allocation
+complexity_score: int = Field(..., description="1-10 scale. 1=Easy, 10=Complex/Vague")
+# The department assignment
+domain: Literal["hr", "finance", "engineering", "admin", "general"]
+# The safety check
+risk_level: Literal["low", "medium", "high"]
+# Why? (For debugging)
+reasoning: str
+B. The System Prompt (Logic)
+Copy this into prompts.py
+Python
+CLASSIFIER_PROMPT = """
+You are the Classification Engine for GeniOS.
+Your job is to triage the user's request into structured metadata.
+1. ANALYZE INTENT:
+- 'chat': Casual conversation.
+- 'query': Asking for information (Read-only).
+- 'task': A single, clear action (Write email).
+- 'goal': A multi-step outcome (Hire someone, Fix outage).
+2. SCORE COMPLEXITY (1-10):
+- +1 for every implied step.
+- +2 if specific details (names, dates) are missing (Ambiguity).
+- +3 if it involves money or external reputation (Risk).
+3. ASSIGN DOMAIN:
+- HR: People, Hiring, Policies.
+- Finance: Money, Invoices.
+- Engineering: Code, Jira, Bugs.
+- Admin: Scheduling, Emails.
+Output strictly in JSON.
+"""
+C. The Function (Pseudo-Code)
+Copy this logic into planner.py
+Python
+def classify_request(user_input):
+# 1. Run Filters (Fast)
+if match_regex(user_input, GREETINGS): return "chat_flow"
+if match_regex(user_input, ABORT_CMDS): return "system_abort"
+# 2. Run LLM Classifier (Smart)
+classification = llm.predict(
+prompt=CLASSIFIER_PROMPT,
+input=user_input,
+schema=ClassificationOutput
+Phase 1 (Classification)
+5)
+# 3. Router Logic
+if classification.intent == "goal" or classification.complexity_score > 7:
+return start_deep_planning(classification) # Go to Chain of Thought
+elif classification.intent == "task":
+return start_fast_execution(classification) # Go to Single Agent
+elif classification.intent == "query":
+return start_rag_retrieval(classification) # Go to Vector DB
+else:
+return start_chat_response(classification) # Go to Chat
+SECTION 2: CHAIN OF THOUGHTS
+Here is the technical blueprint for the CoT Engine.
+1. The Objective (The "Why")
+The CoT Engine does not execute work. Its job is Decomposition.
+It translates a Business Goal (High Ambiguity) into a Dependency Graph (Low Ambiguity).
+Input: "Hire a generic SDE."
+Output:
+1. Fetch "SDE" Salary Band (Finance).
+2. Fetch "SDE" Job Template (HR).
+3. Check if we have a Hiring Freeze (Policy).
+4. If checks pass $\to$ Draft Job Description.
+2. The Logic Flow (The "Algorithm")
+We implement a 4-Step Reasoning Loop inside the System Prompt. This is based on the "Autonomous Reasoning" model
+described in your documents 2.
+Step A: Context Retrieval (The "Grounding")
+Before thinking, the LLM must acknowledge what it doesn't know.
+Logic: "User said 'SDE'. Do I know which team? No. Do I know the level? No."
+Action: Mark these as "Missing Variables."
+Step B: Constraint Identification (The "Guardrails")
+Identify which policies might block this plan.
+Logic: "This involves money (hiring). Therefore, I must check the Budget Policy first." 3
+Step C: Step-by-Step Planning (The "Sequence")
+Break the goal into linear or parallel steps.
+Logic: "I cannot interview candidates before I have a Job Description. Therefore, JD Creation is Step 1."
+Step D: Dependency Mapping (The "Graph")
+Link steps together.
+Phase 1 (Classification)
+6Logic: "Step 3 (Post Job) depends on Step 2 (Approve JD)."
+3. The System Prompt (The Intelligence)
+This is the prompt you inject into the CoT Node (using a powerful model like GPT-4o).
+Python
+# SYSTEM PROMPT FOR CHAIN OF THOUGHT ENGINE
+COT_SYSTEM_PROMPT = """
+You are the Strategic Planner for GeniOS.
+Your goal is to break down a COMPLEX USER GOAL into a logical EXECUTION PLAN.
+### INPUT DATA
+User Goal: {user_goal}
+Current Context: {user_context} (e.g., User Role, Time, Active Projects)
+### REASONING PROCESS (Think before you plan)
+1. **Analyze Intent:** What is the specific business outcome?
+2. **Identify Missing Info:** What variables are needed but missing? (e.g., Budget, Dates).
+3. **Select Domain:** Which specialized agents (HR, Finance, Tech) are required?
+4. **Apply Logic:** What *must* happen first? (e.g., "Check Budget" before "Spend Money").
+### OUTPUT SCHEMA (JSON ONLY)
+Return a plan containing a list of 'steps':
+{
+"reasoning_summary": "Brief explanation of your strategy.",
+"missing_information": ["List of questions to ask user if critical info is missing"],
+"plan": [
+{
+"step_id": 1,
+"step_name": "Action Name",
+"agent_target": "HR" | "FINANCE" | "TECH",
+"action_type": "decision" | "retrieval" | "creation",
+"description": "What exactly should this agent do?",
+"dependencies": [] // List of step_ids that must finish first
+}
+]
+}
+"""
+4. The Data Structure (The "Blueprint")
+The output of the CoT Engine is a JSON object we call the ExecutionPlan . This object flows into the Logic Layer for validation.
+JSON
+{
+"reasoning_summary": "User wants to hire. This is a financial commitment, so we must validate budget before creatin
+g external artifacts.",
+"missing_information": [],
+"plan": [
+{
+"step_id": 1,
+"step_name": "check_hiring_budget",
+"agent_target": "FINANCE",
+"action_type": "retrieval",
+"description": "Query the budget database for 'SDE' role capacity.",
+"dependencies": []
+Phase 1 (Classification)
+7},
+{
+"step_id": 2,
+"step_name": "fetch_job_template",
+"agent_target": "HR",
+"action_type": "retrieval",
+"description": "Retrieve the standard 'Senior SDE' job description from the policy vector DB.",
+"dependencies": []
+},
+{
+"step_id": 3,
+"step_name": "draft_requisition",
+"agent_target": "HR",
+"action_type": "creation",
+"description": "Combine budget data and template to create a new Job Requisition draft.",
+"dependencies": [1, 2] // BLOCKED: Waits for Budget & Template
+}
+]
+}
+5. Handling "Missing Information" (The Self-Correction)
+Sometimes, a plan cannot be made because the user was too vague.
+Input: "Plan a party." (Too vague).
+CoT Action: The missing_information field is populated.
+System Logic:Python
+if len(plan.missing_information) > 0:
+# STOP PLANNING.
+return AskUser(plan.missing_information)
+else:
+# PROCEED.
+return send_to_logic_layer(plan)
+Summary of Section 2
+What it does: Converts "Goal" $\to$ "Plan (JSON)".
+Key Logic: Dependency mapping (Step B needs Step A).
+Failure State: If info is missing, it triggers a question back to the user instead of guessing.
+It is 80% System Prompt (The Brain) and 20% Python Logic (The Skeleton).
+You cannot rely only on a prompt, or the output will be inconsistent. You must wrap the prompt in a rigorous Algorithm to
+force it to think logically.
+Here is the exact step-by-step technical implementation of the CoT Engine for Mr. Elite.
+Step 1: The Input (Context Injection)
+Algorithm: RAG (Retrieval-Augmented Generation)
+Before the LLM starts "thinking," we must feed it the rules of the game. If you just prompt "Plan a hiring process," it will
+hallucinate generic advice.
+Logic:
+1. Receive User Goal: "Hire a Senior SDE."
+2. Query Vector DB: Fetch related policies (e.g., "Hiring Policy", "Budget Approval Rules").
+Phase 1 (Classification)
+83. Construct Payload: Combine User Goal + Retrieved Policies + Current Date/Time .
+Why: The "Thoughts" must be based on your company's reality, not the internet's 1.
+Step 2: The Reasoning Loop (The Prompt Strategy)
+Algorithm: ReAct (Reason + Act) Pattern
+This is where the System Prompt does the heavy lifting. We don't ask for a list of steps immediately. We force the model to
+"talk to itself" first.
+The Logic we enforce in the Prompt:
+1. Decompose: Break the big goal into smaller chunks.
+2. Identify Dependencies: Explicitly ask, "Does Step B need Step A?"
+3. Check Missing Info: Explicitly ask, "Do I have all the variables?" 2.
+The "Magic" Prompt Structure:
+"You are a Logical Planner.
+Phase 1: Analyze the Request. What is the definition of done?
+Phase 2: Identify Constraints. (e.g., Budget, Legal).
+Phase 3: List the atomic actions required.
+Phase 4: Identify Dependencies. (e.g., Action 2 cannot start until Action 1 outputs X)."
+Step 3: The Output Generation (The Structure)
+Algorithm: Structured Generation (JSON Schema / Pydantic)
+We do not accept text. We force the LLM to output a Directed Acyclic Graph (DAG) represented as JSON.
+We define a specific schema (The "Atom" Structure) that the LLM must fill out.
+The Code Logic (Pydantic):
+Python
+class PlanStep(BaseModel):
+step_id: str
+action: str
+tool_needed: str
+dependency_ids: List[str] # This creates the "Chain"
+reasoning: str
+# The "Thought" behind this step
+Step 4: The Validation Logic (The Anti-Hallucination Layer)
+Algorithm: Graph Validity Check
+This is the "Python Logic" part. Once the LLM gives us the JSON plan, we run a script to verify it before execution.
+The Validation Algorithm:
+1. Cycle Detection: Does Step A wait for Step B, and Step B wait for Step A? (Infinite Loop). If yes -> Reject Plan.
+2. Tool Availability: Does the tool_needed actually exist in our system? If no -> Reject Plan.
+3. Variable Continuity: Does Step 2 ask for candidate_email ? Does Step 1 actually produce candidate_email ? If no -> Reject Plan.
+Step 5: The "Blocking" Logic (Handling Execution)
+Algorithm: Topological Sort
+You asked "which tasks to block." This is mathematically determined by the dependencies list generated in Step 3.
+How it works (The Runtime):
+Phase 1 (Classification)
+9Parallel Execution: If Step 1 (Finance Check) and Step 2 (Check Resource) have dependencies: [] , the system runs them
+simultaneously.
+Blocking: If Step 3 (Send Email) has dependencies: ["step_1", "step_2"] , the system holds Step 3 in a "Pending State".
+Unblocking: As soon as Step 1 and 2 finish (return "Success"), the system unlocks Step 3.
+Summary of the "Chain of Thoughts" Build
+ComponentTechnology / LogicRole
+1. The BrainLLM System PromptGenerates the ideas and strategy.
+2. The StructurePydantic / JSONForces ideas into "Atoms" (Code objects).
+3. The ValidationPython ScriptChecks for loops and impossible actions.
+4. The FlowTopological SortManages which atoms run now vs. later.
+The Logic Patterns: Which tasks to block?
+This is the specific logic you asked for. We classify blocking into three "Blocker Patterns":
+Pattern A: Data Dependency (Hard Block)
+Logic: Step 2 requires a specific variable (string/file/ID) that is created by Step 1.
+Example: "Draft Reply" (Step 2) needs "Context" from "Read Email" (Step 1).
+Algo Check: if input_variable is NULL -> BLOCK .
+Pattern B: Policy Gating (Soft Block)
+Logic: Step 2 is a "High Risk" action (Spending money, Sending external email) and requires a "Verification" step first.
+Example: "Transfer Funds" (Step 2) is blocked by "Manager Approval" (Step 1).
+Algo Check: if action.risk_level > threshold AND approval_status != TRUE -> BLOCK .
+Pattern C: State Prerequisite (Logical Block)
+Logic: The target system must be in a specific state before the action is valid.
+Example: "Merge PR" (Step 2) is blocked by "Tests Passed" (Step 1).
+Algo Check: if system_state != "READY" -> BLOCK .
+4. How the "Execution Engine" runs this (The Topological Sort)
+Once the CoT generates the list above, the Orchestrator (Mr. Elite) uses a Topological Sort Algorithm to execute it.
+1. Scan: Look at all atoms.
+2. Identify: Find atoms where dependencies == [] (Empty list).
+Result: Atom A (Check Budget) has no dependencies.
+3. Execute: Run Atom A.
+4. Update:
+Atom A finishes. Output budget_status = "APPROVED" .
+Remove "A" from all dependency lists.
+5. Loop: Scan again.
+Result: Atom B now has dependencies == [] .
+6. Execute: Run Atom B.
+Summary
+Definition: CoT is the creation of a JSON Dependency Graph.
+Phase 1 (Classification)
+10Logic: We use ReAct to identify steps and Data Flow Analysis to identify blocks.
+Algorithm: Topological Sort ensures we never run a step before its blocker is removed.
+To be technically precise, your summary maps to the architecture like this:
+1. Classifier Layer: Decides what to build (Task vs. Goal).
+2. Prompt Logic (CoT): The "Architect" that chunks the goal into steps (Atoms).
+3. Blockers (Dependencies): The "Traffic Lights" defined inside the Atoms (e.g., "Wait for Step 1").
+4. Validators: The "Quality Control" that checks the Atoms before they move to the next layer.
+You are describing a Draft $\to$ Validate $\to$ Finalize pipeline.
+SECTION 3: ATOMISATION
+Here is the Implementation Specification for the Atomization Engine.
+1. The Core Architecture: Hardcoded vs. Prompt
+This is the most important decision. We use a Hybrid Approach:
+The Intelligence (Prompt): Used to extract meaning. (e.g., "Draft email" = COMMS_AGENT ).
+The Structure (Hardcoded Python): Used to enforce the rules. (e.g., UUIDs, JSON validation, Dependency cycles).
+Rule of Thumb: Never trust the LLM to generate valid UUIDs or manage graph cycles. Hardcode that.
+2. The Algorithm: The "Atomizer" Pipeline
+We will build a Python Class: AtomizerEngine.
+It runs a 4-Step Linear Algorithm on the Chain of Thought (CoT) output.
+Step 1: The "Structure Enforcer" (Parsing)
+Input: The raw JSON from the CoT LLM.
+Mechanism: Pydantic Validation (Hardcoded).
+Logic: We define a strict Schema. If the LLM output misses a field (like tool_name ), the code throws a ValidationError
+immediately. We do not guess.
+Step 2: The "Identity Generator" (Enrichment)
+Input: Validated Draft Atoms.
+Mechanism: Python uuid Library (Hardcoded).
+Logic:
+The LLM gives "Step 1".
+Code: atom.id = str(uuid.uuid4()) (e.g., a1b2-c3d4... ).
+Code: Replace all textual references ("Wait for Step 1") with the new UUIDs in the dependencies list.
+Step 3: The "Tagging Engine" (Classification)
+Input: An Atom with an action ("pay_invoice").
+Mechanism: Dictionary Lookup (Hardcoded) (Fastest & Safest).
+Logic:Python
+# Hardcoded Tagging Rules
+RISK_KEYWORDS = ["pay", "transfer", "delete", "grant_access"]
+Phase 1 (Classification)
+11RESOURCE_KEYWORDS = ["fetch", "get", "query", "read"]
+if any(k in atom.action for k in RISK_KEYWORDS):
+atom.tags.append("REQUIRES_POLICY_CHECK")
+if any(k in atom.action for k in RESOURCE_KEYWORDS):
+atom.tags.append("REQUIRES_RESOURCE_FETCH")
+Step 4: The "Graph Builder" (Validation)
+Input: List of Atoms with UUIDs.
+Mechanism: Directed Acyclic Graph (DAG) Check (Python networkx lib).
+Logic:
+Build a graph in memory.
+Run networkx.is_directed_acyclic_graph() .
+If False: The plan has an infinite loop. Reject it.
+If True: The plan is valid.
+3. The Development Plan: Step-by-Step
+This is your coding checklist.
+Phase 1: Define the Data Contract (The Hardcoded Schema)
+Create a file schemas.py . This is the single source of truth.
+Python
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict
+class Atom(BaseModel):
+# Enforced by Python, populated by LLM
+description: str = Field(..., description="Human readable step")
+agent_type: str = Field(..., description="Target agent: HR, FINANCE, etc.")
+tool_name: str = Field(..., description="Specific function: stripe_pay, gmail_send")
+arguments: Dict[str, str] = Field(..., description="Parameters for the tool")
+# Enforced by LLM Logic
+dependency_step_indices: List[int] = Field(default=[], description="List of step indices this step waits for")
+# Enforced by Python Logic (Added post-generation)
+atom_id: Optional[str] = None
+tags: List[str] = []
+status: str = "PENDING"
+Phase 2: The Extraction Prompt (The Logic)
+Write the System Prompt that forces the CoT into the Schema above.
+Python
+ATOMIZER_PROMPT = """
+You are a Technical Architect. Convert the plan into ATOMIC SPECS.
+For each step, identify:
+1. WHO: The Agent (HR, FINANCE, TECH).
+2. HOW: The exact Tool Name (see tool list).
+3. INPUT: The arguments needed.
+Phase 1 (Classification)
+124. BLOCKERS: Which step numbers must finish first?
+OUTPUT: A list of JSON objects matching the Atom Schema.
+"""
+Phase 3: The Python Processor (The Code)
+Create a file atomizer.py . This is where the algorithm lives.
+Python
+import uuid
+import networkx as nx
+class AtomizerEngine:
+def process_plan(self, cot_plan_json):
+atoms = []
+# 1. Parse & ID Generation
+for index, step in enumerate(cot_plan_json):
+atom = Atom(**step) # Pydantic Validation
+atom.atom_id = str(uuid.uuid4()) # Hardcoded UUID
+atoms.append(atom)
+# 2. Dependency Resolution (Mapping Index to UUID)
+for atom in atoms:
+new_deps = []
+for dep_index in atom.dependency_step_indices:
+target_uuid = atoms[dep_index].atom_id
+new_deps.append(target_uuid)
+atom.dependencies = new_deps # Update to UUIDs
+# 3. Hardcoded Tagging Logic
+for atom in atoms:
+if "money" in atom.arguments or "pay" in atom.tool_name:
+atom.tags.append("risk_high")
+atom.tags.append("policy_check_required")
+# 4. Graph Validation (The Algorithm)
+if not self._validate_dag(atoms):
+raise Exception("Invalid Plan: Cycle Detected")
+return atoms
+def _validate_dag(self, atoms):
+G = nx.DiGraph()
+for a in atoms:
+G.add_node(a.atom_id)
+for dep in a.dependencies:
+G.add_edge(dep, a.atom_id)
+return nx.is_directed_acyclic_graph(G)
+4. Summary of Strategy
+Logic:
+LLM: Selects the tool and arguments (Intelligence).
+Python: Assigns IDs, maps dependencies, and checks for loops (Reliability).
+Phase 1 (Classification)
+13Algorithm: We use Graph Theory (DAG) to ensure the plan is mathematically executable.
+1. How Atoms are Tagged & Routed (The "Registry" Logic)
+You asked if this is System Prompt or Hardcoded.
+The Answer: It is 10% System Prompt (Selection) and 90% Hardcoded Logic (Routing).
+If we rely on the LLM to say "Route to Finance," it will eventually hallucinate. Instead, we use a Hardcoded Tool Registry.
+The Algorithm:
+1. Selection (LLM): The CoT selects a Tool Name (e.g., stripe_pay ). It does not decide the agent.
+2. Routing (Code): A Python script looks up that Tool Name in a Dictionary (Map) to find the owner.
+The Code Structure (The Registry):
+This file tool_registry.py is the source of truth.
+Python
+# HARDCODED ROUTING MAP
+TOOL_REGISTRY = {
+# Tool Name
+# Owner Agent
+# Execution Method
+"stripe_pay":
+{"agent": "FINANCE", "type": "api", "risk": "high"},
+"check_budget":
+{"agent": "FINANCE", "type": "db", "risk": "low"},
+"send_email":
+{"agent": "COMMS", "type": "api", "risk": "medium"},
+"generate_contract": {"agent": "HR",
+"type": "llm", "risk": "high"},
+}
+The Tagging Process:
+When the Chain of Thought produces an atom with tool: "stripe_pay", your code automatically does this:
+Python
+atom.agent = TOOL_REGISTRY["stripe_pay"]["agent"] # Sets "FINANCE"
+atom.risk = TOOL_REGISTRY["stripe_pay"]["risk"] # Sets "high"
+Result: The atom is now strictly tagged. No guessing.
+2. How Priority & Order is Decided (The "DAG" Algorithm)
+You are absolutely right—if 5 atoms run independently, it’s a disaster. You cannot "Send Email" before "Drafting" it.
+The Solution: We do not use "Priority" (High/Low). We use Dependencies (Blockers).
+This is derived directly from the Chain of Thoughts (CoT).
+The Logic: Topological Sort
+The CoT LLM is forced to output dependencies: [ID] .
+Atom 1: Check Budget (Dependencies: [] )
+Atom 2: Draft Offer (Dependencies: [Atom 1] ) -> Waits for Budget.
+Atom 3: Send Offer (Dependencies: [Atom 2] ) -> Waits for Draft.
+The Execution Flow:
+Your Orchestrator (Mr Elite) runs a specific algorithm called Topological Sort.
+1. Scan: Find all atoms with dependencies == [] .
+Found: Atom 1.
+2. Execute: Run Atom 1.
+Phase 1 (Classification)
+143. Update: Mark Atom 1 as "Complete". Remove "Atom 1" from everyone else's dependency list.
+4. Loop: Scan again.
+Now Found: Atom 2 (because Atom 1 is gone).
+5. Execute: Run Atom 2.
+What happens if 5 atoms are independent?
+If Atoms 1, 2, and 3 have dependencies: [], the system puts them in a Parallel Execution Queue. They run simultaneously to
+save time.
+3. How Atoms "Jump" to the Logic Layer
+This is not a magical jump. It is a Function Pipeline.
+The atoms are just data (a List of JSON objects).
+The Data Flow:
+1. Phase 1 (Planning): Creates the list of 5 atoms.
+2. Phase 2 (Tagging): Python adds tags ( agent: HR , policy_check: true ) using the Registry.
+3. Phase 3 (The Jump): The code explicitly passes this list to the Logic Layer function.
+The Code Implementation:
+Python
+# The Main Pipeline
+def run_mr_elite(user_prompt):
+# 1. Plan & Atomize
+raw_atoms = chain_of_thought_engine(user_prompt)
+# 2. Tag & Route (The Registry Lookup)
+tagged_atoms = atomizer_tagging(raw_atoms)
+# 3. THE JUMP TO LOGIC LAYER
+# We pass the entire list to the Logic Engine BEFORE execution
+validated_atoms = logic_layer_engine(tagged_atoms)
+# 4. Execute (Only if Logic Layer returns valid atoms)
+return execution_engine(validated_atoms)
+Summary of the Flow
+1. CoT creates the steps and defines "Who blocks Who" (Dependencies).
+2. Python Registry assigns the "Agent" and "Risk" tags (Hardcoded).
+3. Logic Layer receives the list via a function call to check those Risk tags (e.g., "Is 'high' risk allowed?").
+4. Topological Sorter executes them in the exact order defined by the dependencies.
+The "Brain" (LLM/CoT) creates the plan, but The "Spine" (Hardcoded Logic) actually moves the muscles. We never let
+the LLM "call" the code directly; we use a hardcoded Dispatcher to handle the delegation safely.
+Here is the exact mechanics of how this "Hand-off" happens.
+1. The Component: The "Central Dispatcher"
+This is a specific Python class in your system (e.g., dispatcher.py ). Its only job is to take a Validated Atom and route it to the
+correct destination.
+Phase 1 (Classification)
+152. The Process: "The Execution Loop"
+This process runs after the Logic Layer has approved the atoms.
+The Algorithm:
+1. Load: The Dispatcher receives the list of Atoms (sorted by dependencies).
+2. Iterate: It loops through them one by one.
+3. Switch (The Hardcoded Logic): It reads the target_agent tag and routes the payload.
+3. Step-by-Step Execution Flow
+Here is exactly how the code works when it receives an atom like:
+{ "id": "A1", "target_agent": "FINANCE", "tool": "stripe_pay", "args": {"amount": 500} }
+Step A: The Switch (Routing)
+The code uses a standard if/else or Dictionary Map to find the handler.
+Python
+# execution/dispatcher.py
+def dispatch_atom(atom):
+print(f"Executing Step: {atom.description}")
+# 1. HARDCODED DELEGATION SWITCH
+if atom.target_agent == "FINANCE_AGENT":
+return execute_finance_module(atom)
+elif atom.target_agent == "HR_AGENT":
+return execute_hr_subgraph(atom)
+elif atom.target_agent == "TECH_AGENT":
+return execute_tech_module(atom)
+else:
+raise ValueError("Unknown Agent Target")
+Step B: The Execution (Tool vs. Agent)
+This is where the "Actual Work" happens. The system distinguishes between a dumb tool (fast) and a smart agent (slow).
+Scenario 1: The "Dumb Tool" (Direct Function Call)
+Input: stripe_pay
+Logic: The execute_finance_module looks up the Python function process_payment() and runs it.
+Result: Immediate return.
+Scenario 2: The "Smart Agent" (LLM Delegation)
+Input: draft_contract
+Logic: The execute_hr_subgraph spins up a Sub-Agent.
+Action: It sends a prompt to a new LLM session: "You are an HR Writer. Draft a contract for [Args]."
+Result: Returns text after generation.
+4. How Data Flows Back (The Feedback Loop)
+Delegation is useless if you don't get results back.
+When the tool finishes, it returns an Output Artifact.
+The Code:Python
+Phase 1 (Classification)
+16# Inside the loop
+result = dispatch_atom(atom)
+# STORE RESULT FOR NEXT STEPS
+# If Atom 1 (Fetch Salary) returns "$50,000",
+# we save it so Atom 2 (Draft Offer) can read it.
+execution_memory[atom.output_variable_name] = result
+Summary of the "Hardcoded Delegation"
+1. Who delegates? A Python script called The Dispatcher .
+2. How does it know where to go? It reads the target_agent string from the Atom (set during Atomization).
+3. How does it run?
+If it's a Tool, it calls a specific Python function ( def ).
+If it's an Agent, it triggers a new LLM Prompt Chain.
+This ensures that even if the AI is "creative" with the plan, the Execution is rigid, safe, and controlled by your hardcoded
+rules.
+Phase 1 (Classification)
+17

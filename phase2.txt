@@ -1,0 +1,653 @@
+Running the **Logic Layer** (Rules) and **Context Layer** (Memory) in **parallel** is a brilliant engineering decision. It reduces latency significantly because you don't need to wait for "Memory" to check "Policy."
+
+[Image of parallel processing architecture](https://encrypted-tbn1.gstatic.com/licensed-image?q=tbn:ANd9GcT3DGFOiuDknTnT1xljVj1PwoziIW6bKnxwoq5z1Nf2SBG948L48ScVzAof8YIFoOHGQLCGmRU8veI87SDE-j4YUczsujk5UxKmTdqzVg0iDOHYUfA)
+
+Shutterstock
+
+Here is the finalized technical flow based on your redefinition:
+
+1. **Planning Layer:** Generates "Draft Atoms" (Skeleton).
+2. **The "Enrichment Engine" (Parallel Execution):**
+    - **Thread A (Logic):** "Is this allowed?" (Policy) + "Get Templates" (Resources).
+    - **Thread B (Context):** "What happened last time?" (Memory) + "Current Status?" (State).
+3. **Merger:** The Atom collects data from both threads.
+4. **Control Layer:** Final Security/Safety Check.
+5. **Execution Layer:** Dispatch to Agents.
+
+---
+
+### **Now, let's build the Logic Layer (Policy + Resources)**
+
+This layer is the "Conscience" and "Library" of Mr. Elite. It ensures decisions align with business rules and have the right templates.
+
+### **1. The Component Structure**
+
+The Logic Layer consists of two distinct engines running together:
+
+- **The Policy Engine:** Enforces boundaries (e.g., "Max budget is $500").
+- **The Resource Engine:** Fetches static assets (e.g., "SDE Job Description PDF").
+
+### **2. Building the Policy Engine (The "Conscience")**
+
+This is the most critical part of the "Moat" 1. It prevents the AI from doing stupid or dangerous things.
+
+**Architecture:**
+
+- **Storage:** **Vector Database** (Pinecone/Weaviate). We store policies as text vectors.
+- **Retrieval:** Semantic Search.
+- **Logic:** `Semantic Match -> Rule Extraction -> Validation`.
+
+**The Build Steps:**
+
+- Step A: The Policy Registry (Database)
+    
+    Store rules like this in your Vector DB:
+    
+    - `"Hiring Policy: All offers > $150k require CEO approval."`
+    - `"Finance Policy: No payments on weekends."`
+    - 
+        
+        `"Comm Policy: Always CC the founder on client apologies."` 2
+        
+- Step B: The Validator Function (Python)Python
+    
+    When an Atom arrives (e.g., "Draft Offer for $160k"), this function runs:
+    
+    # 
+    
+    ```yaml
+    def validate_policy(atom):
+        # 1. Search Vector DB for relevant rules
+        relevant_rules = vector_db.query(atom.description) 
+        # Returns: "All offers > $150k require CEO approval"
+    
+        # 2. Compare Atom vs. Rule (using LLM for judgment)
+        verdict = llm_judge.check(atom, relevant_rules)
+    
+        # 3. Apply Outcome
+        if verdict.violation:
+            atom.tags.append("BLOCKED_BY_POLICY")
+            atom.status = "REQUIRES_APPROVAL" # Stops Execution
+        else:
+            atom.tags.append("POLICY_CLEARED")
+    
+        return atom
+    ```
+    
+
+### **3. Building the Resource Engine (The "Library")**
+
+The AI needs "Ingredients" to do the work. The Resource Engine provides them.
+
+**Architecture:**
+
+- **Storage:** **Object Storage** (AWS S3 / Supabase Storage) + Metadata DB.
+- **Logic:** `Keyword Match -> Fetch Asset -> Attach to Payload`.
+
+**The Build Steps:**
+
+- Step A: The Asset Library
+    
+    Upload your company’s standard files:
+    
+    - `template_job_desc_sde.pdf`
+    - `brand_guidelines.md`
+    - `email_signature_sales.txt`
+- Step B: The Fetcher Function (Python)Python
+    
+    When an Atom arrives (e.g., "Draft Job Post"), this function runs:
+    
+    # 
+    
+    ```yaml
+    def attach_resources(atom):
+        # 1. Check if Atom needs resources (Tag check)
+        if "resource_fetch" in atom.tags:
+    
+            # 2. Identify Resource ID
+            # (e.g., Planning Layer said "template_name: sde")
+            resource_id = atom.payload.get("template_name")
+    
+            # 3. Fetch Content
+            content = resource_manager.get_text(resource_id)
+    
+            # 4. Inject into Atom
+            atom.context_data["reference_material"] = content
+    
+        return atom
+    ```
+    
+
+---
+
+### **4. How Parallel Execution Works (The Code)**
+
+To make "Logic" and "Context" run in parallel (as you requested), we use Python's **AsyncIO**.
+
+The Enrichment Controller:
+
+This is the code that manages the parallel flow.
+
+Python
+
+# 
+
+```yaml
+import asyncio
+
+async def enrich_atom(atom):
+    # RUN PARALLEL TASKS
+    # Task 1: Logic Layer (Check Policy & Get Resources)
+    logic_task = asyncio.create_task(run_logic_layer(atom))
+    
+    # Task 2: Context Layer (Check Memory & State)
+    context_task = asyncio.create_task(run_context_layer(atom))
+    
+    # WAIT FOR BOTH TO FINISH
+    logic_result, context_result = await asyncio.gather(logic_task, context_task)
+    
+    # MERGE RESULTS
+    atom.update(logic_result)   # Adds policy tags/resources
+    atom.update(context_result) # Adds memory context
+    
+    return atom
+```
+
+### **Summary of Logic Layer Build**
+
+1. **Policy Engine:** Vector DB search to find rules. Blocks execution if rules are violated.
+2. **Resource Engine:** Object Storage fetch to get templates. Injects text into the atom.
+3. **Parallelism:** Async code runs Logic and Context checks simultaneously for speed.
+
+This is the **Enrichment Engine** build plan.
+
+To be precise: The **Atom** (data) does not "act." The **Engine** (code) acts *on* the Atom. The Atom is like a patient entering a scanner; the scanner (Logic/Context layers) analyzes it and updates its chart.
+
+Here is the step-by-step development guide for the **Reasoning Phase**.
+
+---
+
+### **1. The Architecture: The Parallel Scanner**
+
+We treat the Atom as a "Query Object." We extract data from the Atom to query your databases.
+
+**The Algorithm (Async Scatter-Gather):**
+
+1. **Input:** Tagged Atom (from Planning Layer).
+2. **Split:** The Engine fires 4 simultaneous search queries:
+    - **Q1 (Policy):** "Are there rules for [Action]?" (Vector Search).
+    - **Q2 (Resource):** "Do we have a template for [Topic]?" (Keyword/Metadata Search).
+    - **Q3 (State):** "What is the status of [Entity]?" (SQL/Graph Query).
+    - **Q4 (Memory):** "What did we do last time for [Goal]?" (Vector Search).
+3. **Gather:** Collect all results.
+4. **Reason:** Decide if the Atom is safe to proceed.
+
+---
+
+### **2. Step-by-Step Implementation Strategy**
+
+### **Step 1: Query Generation (How it scans)**
+
+We cannot just send the whole Atom JSON to a database. We must extract **Search Terms**.
+
+- **Logic:**
+    - **For Policy:** Use the `description` text. (e.g., "Draft offer for $200k").
+    - **For Resource:** Use the `tool_arguments`. (e.g., `template_name: sde`).
+    - **For State:** Use specific IDs. (e.g., `candidate_id: 123`).
+- **The Code (Query Builder):**Python
+    
+    ```yaml
+    def generate_queries(atom):
+        return {
+            "policy_query": atom.description,  # Semantic
+            "resource_id": atom.arguments.get("template_id"), # Exact
+            "entity_id": atom.arguments.get("entity_id")      # Exact
+        }
+    ```
+    
+
+### **Step 2: The Search Algorithms (What methods are used?)**
+
+We use different algorithms for different layers because "Rules" are vague but "Files" are specific.
+
+| **Target Layer** | **Algorithm** | **Technology** | **Why?** |
+| --- | --- | --- | --- |
+| **Policy** | **Cosine Similarity (Vector)** | Pinecone/Weaviate | Rules like "Be polite" don't have exact keywords. We need meaning. |
+| **Resources** | **Exact Key Match** | Postgres/S3 | You either have the file `SDE_JD.pdf` or you don't. No guessing. |
+| **State** | **SQL Lookups** | Supabase | "Is Budget Approved?" is a Binary (True/False) database field. |
+| **Memory** | **Hybrid Search** | Vector + Keyword | "Last time we hired" needs semantic match + date filtering. |
+
+### **Step 3: Handling Results (Found vs. Not Found)**
+
+This is the logic you asked for: *"If details found then what? If not then what?"*
+
+**Scenario A: The Policy Check**
+
+- **Found (High Similarity > 0.85):**
+    - *Action:* Retrieve the rule.
+    - *Logic:* Check Atom against Rule.
+    - *Result:* If violation, **BLOCK Atom**. Add tag `blocked_by_policy`.
+- **Found (Low Similarity 0.6 - 0.8):**
+    - *Action:* It's ambiguous.
+    - *Logic:* **Trigger Human Review**. We don't guess on grey areas.
+- **Not Found (< 0.6):**
+    - *Action:* Assume action is safe (Default Allow) OR Default Deny (depending on `risk_level` tag).
+    - *Logic:* If `risk == HIGH` and no policy found $\to$ **BLOCK** (Safety First).
+
+**Scenario B: The Resource/State Check**
+
+- **Found (Exact Match):**
+    - *Action:* Download file/Get status.
+    - *Logic:* Inject into `atom.context`.
+- **Not Found (Missing File/ID):**
+    - *Action:* **FAIL Atom**.
+    - *Logic:* You cannot "guess" a file. If the template is missing, the task is impossible.
+    - *Recovery:* Mr. Elite modifies the plan: *"Resource missing. New Step 1: Create Template."*
+
+---
+
+### **3. The Validation Logic (How it Cross-Checks)**
+
+You asked: *"How it will cross check or validate or analyse and proceed further?"*
+
+We use a **"Judge Node" (LLM-based validation)** for the fuzzy parts.
+
+**The Process:**
+
+1. **Aggregation:** The Engine combines the Atom + Retrieved Policy + Retrieved Memory.
+2. **The Prompt:**
+    
+    > "Atom wants to: [Draft Offer $200k].
+    > 
+    > 
+    > Policy says: [Max offer $150k].
+    > 
+    > Memory says: [Last time we made an exception for CTO].
+    > 
+    > Verdict: Is this allowed?"
+    > 
+3. **The Analysis:** The LLM Judge outputs a structured `Verdict` object.
+
+**The Code (Analysis Loop):**
+
+Python
+
+```yaml
+class Verdict(BaseModel):
+    is_allowed: bool
+    reason: str
+    modifications_required: Optional[str]
+
+def analyze_atom(atom, policy_context, memory_context):
+    # Only run Judge if there are conflicting signals
+    if policy_context and atom.risk_level == "HIGH":
+        judge = llm.with_structured_output(Verdict)
+        result = judge.invoke(atom, policy_context, memory_context)
+        
+        if not result.is_allowed:
+            atom.status = "BLOCKED"
+            atom.failure_reason = result.reason
+            return atom
+            
+    # If no conflicts, proceed
+    atom.status = "READY"
+    return atom
+```
+
+---
+
+### **4. Summary: How Things are Actually Done**
+
+Here is the developer workflow to build this **Enrichment Engine**:
+
+1. **Build the "Fetchers":** Write Python functions to query your Vector DB (Policy) and SQL DB (State).
+2. **Implement Parallelism:** Use `asyncio.gather()` so fetching Policy and State happens at the same time (Speed).
+3. **Write the "Merge Logic":**
+    - If **Resource** is missing $\to$ Mark Atom as `FAILED`.
+    - If **Policy** is violated $\to$ Mark Atom as `BLOCKED`.
+    - If **State** is wrong (e.g., "Budget Closed") $\to$ Mark Atom as `PAUSED`.
+4. **Implement the "Judge":** Use a fast LLM (GPT-4o-mini) to resolve conflicts between the Atom's intent and the retrieved Policy.
+
+This is the critical "Judgment" step. You are asking how the system switches from **Collecting** (Fetching data) to **Deciding** (Approving the action).
+
+In the **Reasoning Phase**, Mr. Elite shifts his "Brain Mode" from **Architect** (Creative Planner) to **Auditor** (Strict Judge).
+
+Here is exactly how the **Analysis & Decision Algorithm** works inside the Logic Layer.
+
+### 1. The Architecture: The "Judge Node"
+
+We don't just "if/else" this. We use a dedicated Audit Function.
+
+This function takes the Atom (Intent) and the Context (Reality) and looks for Conflicts.
+
+**The Input State:**
+
+- **Atom Intent:** "Draft an offer letter for Candidate X at $160k."
+- **Context (Policy):** "Found Rule: Offers > $150k require VP approval."
+- **Context (State):** "Budget Status: Open."
+- **Context (Resource):** "Template: `Senior_Offer_v2.docx` found."
+
+---
+
+### 2. The Logic: How it "Reasons" Again (The 3-Step Audit)
+
+We run a **Conflict Detection Algorithm**. This determines if the Atom survives.
+
+### **Step A: The Hard Constraint Check (Deterministic Code)**
+
+- **Goal:** Check binary realities. (True/False).
+- **Logic:**
+    - *Resource Check:* Did the database return the template?
+        - `if resource_content is None: return "FAILED: Missing Template"`
+    - *State Check:* Is the budget open?
+        - `if budget_status == "CLOSED": return "BLOCKED: Budget Closed"`
+- **Decision:** If any Hard Constraint fails, the Atom dies immediately.
+
+### **Step B: The Soft Policy Check (LLM Reasoning)**
+
+- **Goal:** Interpret vague business rules.
+- **Logic:** We send a specific prompt to the "Judge LLM" (a cheap, fast model like GPT-4o-mini).
+    - **Prompt:**
+        
+        > "User wants: $160k salary.
+        > 
+        > 
+        > Policy says: Max $150k without approval.
+        > 
+        > Verdict: Does this violate the policy? Yes/No."
+        > 
+- **Decision:** The LLM returns `violation: True` and `reason: "Exceeds cap"`.
+
+### **Step C: The "Resolution" Strategy (Mr. Elite's Autonomy)**
+
+- **Goal:** Decide *what to do* about the violation.
+- **Logic:** The system checks the **Risk Level** (set earlier during Atomization).
+    - *Scenario:* Policy Violation Found.
+    - *If Risk == LOW (e.g., Drafting internal text):* **Override & Proceed** (with a warning).
+    - 
+        
+        *If Risk == HIGH (e.g., Sending external offer):* **Block & Escalate**1.
+        
+
+---
+
+### 3. How the Decision is Made (The Code)
+
+This is the exact logic flow your developers need to write for the `evaluate_atom` function.
+
+Python
+
+```yaml
+def evaluate_atom(atom, fetched_context):
+    
+    # 1. HARD CHECKS (Resources/State)
+    if not fetched_context["resource_found"]:
+        atom.status = "FAILED"
+        atom.error_msg = "Required template not found."
+        return atom # STOP HERE
+
+    # 2. SOFT CHECKS (Policy Audit)
+    # Only run if policies were actually found
+    if fetched_context["policies"]:
+        verdict = llm_judge.audit(
+            action=atom.description,
+            rules=fetched_context["policies"]
+        )
+        
+        if verdict.is_violation:
+            # 3. THE AUTONOMY DECISION (Escalate vs Block)
+            if atom.risk_level == "HIGH":
+                atom.status = "ESCALATED_TO_HUMAN" # Pause for Human
+                atom.blocker_reason = verdict.explanation
+            else:
+                atom.status = "FLAGGED" # Proceed with warning
+                atom.tags.append("policy_warning")
+
+    # 4. DEFAULT PASS
+    if atom.status == "PENDING":
+        atom.status = "APPROVED"
+        
+    return atom
+```
+
+---
+
+### 4. Outcomes: What happens next?
+
+Based on the decision above, the Atom takes one of three paths:
+
+### **Path 1: The "Green Light" (Approved)**
+
+- **Condition:** All checks passed (or only low-risk warnings).
+- **Action:** The Atom is moved to the **Control Layer Queue**.
+- **System State:** Mr. Elite logs: *"Policy Check Passed. Moving to execution."*
+
+### **Path 2: The "Yellow Light" (Escalation)**
+
+- **Condition:** A blocking policy was hit (e.g., Salary too high), but it's not an error—it's a choice.
+- **Action:** The Atom is **Paused**.
+- **User Interaction:** Mr. Elite sends a message to the UI:
+    
+    > "I drafted the offer, but $160k is above the $150k limit. Do you approve this exception? [Yes/No]" 2
+    > 
+- **Wait:** The system halts this specific branch until the user clicks "Yes."
+
+### **Path 3: The "Red Light" (Hard Failure)**
+
+- **Condition:** A critical resource is missing (e.g., "SDE_JD.pdf" does not exist).
+- **Action:** The Atom is **Killed**.
+- **Self-Correction:** Mr. Elite triggers a **Re-Planning Loop**.
+    - *Reasoning:* "I cannot draft the offer because the template is missing."
+    - 
+        
+        *New Plan:* "Step 1: Ask User for the template." 3
+        
+
+### Summary of "How to Decide"
+
+1. **Match:** Does the Atom align with the Context?
+2. **Audit:** If there is a conflict, is it a *Rule* (Soft) or a *Law* (Hard)?
+3. **Verdict:**
+    - **Law Broken (Missing File):** Fail & Re-plan.
+    - **Rule Broken (High Budget):** Escalate to Human.
+    - **No Issues:** Proceed to Control Layer.
+
+SUMMARY
+
+| **Phase** | **What it does** | **Logic Used** | **Technical Tool** |
+| --- | --- | --- | --- |
+| **1. Checking** | Verifies Files & Binary States | `If/Else` Comparison | Python Code |
+| **2. Analyzing** | Interprets Policy Nuance | Semantic Comparison | LLM (Prompt) |
+| **3. Validating** | Assigns Final Status (Color) | Decision Matrix | Python Logic |
+
+This is the detailed implementation plan for the **Reasoning Phase Logic**.
+
+You asked for the specific **Algorithm** for the "Traffic Lights" (Red/Yellow/Green) and the exact steps for **Checking, Analyzing, and Validating**.
+
+Here is the blueprint.
+
+---
+
+### **1. The Core Logic: The "Traffic Light" Algorithm**
+
+The system decides the fate of an Atom using a **Decision Matrix**. It combines two inputs: **Violation Severity** (from Policy) and **Operational Risk** (from the Atom).
+
+**The Algorithm (Decision Matrix):**
+
+| **Violation Found?** | **Atom Risk Level** | **Traffic Light** | **Action** |
+| --- | --- | --- | --- |
+| **No** | Low / High | 🟢 **GREEN** | **APPROVE:** Move to Control Layer. |
+| **Yes (Soft)** | Low (Drafting) | 🟢 **GREEN (Flagged)** | **WARN:** Proceed, but add a warning tag. |
+| **Yes (Soft)** | High (Sending) | 🟡 **YELLOW** | **ESCALATE:** Pause. Ask Human for override. |
+| **Yes (Hard)** | Any | 🔴 **RED** | **BLOCK:** Kill the Atom. Trigger Re-planning. |
+- **Hard Violation:** Something physically impossible (Missing File, Closed Budget).
+- **Soft Violation:** Something logically discouraged (Budget exceeded, Policy mismatch).
+
+---
+
+### **2. How "Checking" is Done (The Comparison Mechanics)**
+
+We use a **Hybrid Comparison Engine**. We do not use LLMs for everything (too slow/expensive). We split the work.
+
+### **A. The "Hard Check" (Deterministic Code)**
+
+- **What it checks:** Binary facts. (Exists/Not Exists, True/False).
+- **Method:** Simple Python `if` statements.
+- **Comparison Logic:**
+    - *Resource:* `if atom.context["resource_content"] is None` $\to$ **FAIL**.
+    - *State:* `if atom.context["budget_status"] != "OPEN"` $\to$ **FAIL**.
+
+### **B. The "Soft Analysis" (LLM-as-a-Judge)**
+
+- **What it checks:** Nuance. (Is this "professional"? Is this "too expensive"?).
+- **Method:** **LLM Semantic Comparison**.
+- **Comparison Logic:**
+    - We do not compare strings strictly (`"hire" == "hire"`).
+    - We ask the LLM: *"Does Action X violate Policy Y?"*
+    - **Input:** Atom Description + Retrieved Policy Text.
+    - **Output:** `Violation: True/False` + `Severity: Hard/Soft`.
+
+---
+
+### **3. Development Roadmap (Step-by-Step)**
+
+Follow these 4 Steps to build the Reasoning Phase.
+
+### **Step 1: Define the "Verdict" Object (The Data Structure)**
+
+Create a file `core/logic/schema.py`. This object holds the result of the analysis.
+
+Python
+
+# 
+
+```yaml
+from enum import Enum
+from pydantic import BaseModel
+
+class VerdictStatus(str, Enum):
+    PASS = "pass"
+    WARN = "warn"
+    BLOCK = "block"   # Hard Stop (Red)
+    REVIEW = "review" # Human Needed (Yellow)
+
+class LogicVerdict(BaseModel):
+    status: VerdictStatus
+    reason: str
+    blocking_policy_id: str | None = None
+```
+
+### **Step 2: Build the "Hard Checker" (The Fast Filter)**
+
+Create `core/logic/hard_checks.py`. This runs first.
+
+Python
+
+# 
+
+```yaml
+def check_hard_constraints(atom):
+    # 1. Resource Check
+    if "requires_resource" in atom.tags:
+        if not atom.context.get("resource_data"):
+            return LogicVerdict(status="block", reason="Critical Resource Missing")
+
+    # 2. State Check (e.g., Budget)
+    if "requires_budget" in atom.tags:
+        if atom.context.get("budget_open") is False:
+            return LogicVerdict(status="block", reason="Budget is Closed")
+
+    return LogicVerdict(status="pass", reason="Hard checks passed")
+```
+
+### **Step 3: Build the "Soft Analyzer" (The Policy Judge)**
+
+Create `core/logic/soft_analyzer.py`. This runs only if Hard Checks pass.
+
+Python
+
+# 
+
+```yaml
+# System Prompt for the Judge
+JUDGE_PROMPT = """
+You are the Policy Auditor. Compare the Action against the Rules.
+Action: {action}
+Policies Found: {policies}
+
+TASK:
+1. Does the action violate any policy?
+2. If yes, is it a "Hard" violation (Illegal/Impossible) or "Soft" (Discouraged)?
+
+OUTPUT JSON:
+{
+  "violation": bool,
+  "severity": "hard" | "soft" | "none",
+  "explanation": "string"
+}
+"""
+
+def analyze_policy_compliance(atom):
+    # If no policies were found during scanning, pass.
+    if not atom.context.get("policies"):
+        return LogicVerdict(status="pass", reason="No relevant policies found")
+
+    # Call LLM
+    result = llm.invoke(JUDGE_PROMPT, action=atom.description, policies=atom.context["policies"])
+
+    if not result.violation:
+        return LogicVerdict(status="pass", reason="Compliant")
+    
+    # Map Severity to Status
+    if result.severity == "hard":
+        return LogicVerdict(status="block", reason=result.explanation)
+    else:
+        # Soft violation - checking Risk to decide Yellow vs Green
+        if atom.risk_level == "HIGH":
+            return LogicVerdict(status="review", reason=result.explanation) # Yellow
+        else:
+            return LogicVerdict(status="warn", reason=result.explanation)   # Green (Flagged)
+```
+
+### **Step 4: The "Master Controller" (The Pipeline)**
+
+Create `core/logic/engine.py`. This ties it all together.
+
+Python
+
+# 
+
+```yaml
+def run_reasoning_phase(atom):
+    # 1. HARD CHECKS (Fast)
+    verdict = check_hard_constraints(atom)
+    if verdict.status == "block":
+        atom.status = "FAILED"
+        return atom
+
+    # 2. SOFT ANALYSIS (Slow/Smart)
+    verdict = analyze_policy_compliance(atom)
+
+    # 3. APPLY TRAFFIC LIGHTS
+    if verdict.status == "block":
+        atom.status = "FAILED"      # RED
+    elif verdict.status == "review":
+        atom.status = "PAUSED"      # YELLOW (Wait for User)
+    elif verdict.status == "warn":
+        atom.status = "APPROVED"    # GREEN (With Warning Tag)
+        atom.tags.append("warning_flag")
+    else:
+        atom.status = "APPROVED"    # GREEN
+
+    return atom
+```
+
+---
+
+### **4. Summary of Operations**
+
+| **Phase** | **What it does** | **Logic Used** | **Technical Tool** |
+| --- | --- | --- | --- |
+| **1. Checking** | Verifies Files & Binary States | `If/Else` Comparison | Python Code |
+| **2. Analyzing** | Interprets Policy Nuance | Semantic Comparison | LLM (Prompt) |
+| **3. Validating** | Assigns Final Status (Color) | Decision Matrix | Python Logic |

@@ -1,0 +1,156 @@
+Mr Elite MD
+This is the complete Technical Design Document (TDD) for GeniOS (Mr. Elite).
+It aggregates every architectural decision, data structure, and algorithm we have defined in this session into a single
+execution manual for your engineering team.
+GeniOS: Technical Architecture Specification
+Version: 1.0 (MVP)
+System: "Mr. Elite" – The Autonomous Orchestration Engine
+Objective: To build a decision-aware execution layer that translates vague user goals into safe, atomic, and policy-
+compliant actions 1111.
+1. High-Level Architecture
+The system is designed as a closed-loop pipeline consisting of five distinct phases. It follows the philosophy: "Decision
+First, Execution Last"2.
+The Data Flow Pipeline:
+1. Input: Raw User Prompt.
+2. Phase 1 (Planning): Classify $\to$ Reason $\to$ Atomize.
+3. Phase 2 (Reasoning): Enrich (Policy + Resources) + Contextualize (Memory).
+4. Phase 3 (Control): Security Guardrails + Privacy Filters.
+5. Phase 4 (Execution): Dispatch to Tools/Agents via Hardcoded Registry.
+6. Phase 5 (Evaluation): Analytics + Learning Loop (The Moat).
+2. Phase 1: The Planning Layer
+Goal: Convert ambiguity into structured "Atoms of Thought."
+2.1. Component: Input Guardrail (Layer 0)
+Function: pre_flight_check(prompt)
+Logic: Vector Search against "Block List" policies.
+Algo: Cosine Similarity > 0.85 = Immediate Block.
+Purpose: Prevent token waste on illegal/impossible requests.
+2.2. Component: Classification Engine
+Logic: Semantic Routing via System Prompt.
+Categories: CHAT (Conversational), QUERY (RAG), TASK (Atomic), GOAL (Composite) 3.
+Output: Pydantic Object ( IntentClassification ).
+2.3. Component: Chain of Thought (CoT) Engine
+Logic: ReAct Pattern (Reason + Act). Generates a dependency graph.
+Algorithm: Topological Sort (identifies which steps block others).
+Constraint: Must output a list of dependencies (e.g., "Step B waits for Step A").
+2.4. Component: Atomizer (The Structuring)
+Logic: Converts text plans into the Atom JSON schema.
+Hardcoded Logic:
+Mr Elite MD
+1Assigns UUIDs ( uuid4 ).
+Maps "Concepts" to "Tools" via TOOL_REGISTRY .
+Auto-tags risk (e.g., "pay" = RISK_HIGH ).
+3. Phase 2: The Logic & Context Layer
+Goal: Validate Atoms against business rules and fetch required assets 4.
+3.1. Architecture: Parallel Enrichment
+Mechanism: asyncio.gather() runs Logic and Context threads simultaneously.
+3.2. Thread A: The Logic Engine (Policy + Resources)
+Policy Logic:
+Search: Vector Embedding Search (Pinecone) for relevant rules.
+Judge: LLM-based audit ("Does Action X violate Rule Y?").
+Decision Matrix:
+Hard Violation $\to$ BLOCK.
+Soft Violation + High Risk $\to$ ESCALATE (Yellow Light).
+No Violation $\to$ APPROVE.
+Resource Logic: Exact Key Match to fetch templates/files from Object Storage.
+3.3. Thread B: The Context Engine (Memory + State)
+State Logic: SQL Lookup (Supabase) for binary statuses (e.g., budget_open=true ).
+Memory Logic: Vector Search for historical preferences ("Last time, User rejected this draft").
+4. Phase 3: The Control Layer
+Goal: Final security and reliability checkpoint before execution.
+4.1. Middleware Pipeline
+The Atom passes through a sequential chain of filters:
+1. Privacy Guard: Regex scan for PII (SSN, Emails, API Keys). Redacts or Blocks.
+2. Security Guard: Heuristic scan for Prompt Injection attacks.
+3. Reliability Guard: Rate Limit check (Redis counters) and Cost Estimation.
+4. Final Gate: If status == PAUSED (from Logic Layer), hold for Human API Approval.
+5. Phase 4: The Execution Layer
+Goal: safely execute the validated action.
+5.1. Component: Central Dispatcher
+Logic: Reads atom.tool_name and routes via TOOL_REGISTRY .
+Routing Logic:
+Type: CODE_TOOL $\to$ Execute Python Function immediately (Fast).
+Type: AI_AGENT $\to$ Spin up Sub-Agent LLM Session (Slow/Creative) 5.
+Type: WORKFLOW $\to$ Trigger LangGraph Sub-graph.
+5.2. Safety Mechanisms
+Hard Timeouts: All executions wrapped in timeout=30s .
+Mr Elite MD
+2Type Enforcement: Dispatcher casts inputs (e.g., str $\to$ int ) before calling functions.
+6. Phase 5: The Evaluation Layer
+Goal: The "Moat" – Self-learning and optimization 6.
+6.1. Analytics Engine
+Action: Logs cost, latency, and tool success rates to analytics_db .
+6.2. Learning Loop (Implicit Feedback)
+Trigger: When a user edits an output (e.g., rewrites an email).
+Algo: Diff Analysis (Original vs. Final).
+Action: Extracts a new "Preference Rule" and updates the Vector DB.
+7. Core Data Structures (The Contract)
+7.1. The Atom Schema
+Python
+class ExecutionAtom(BaseModel):
+id: str
+# UUID
+description: str
+# "Draft offer for John"
+target_agent: str
+tool_name: str
+# "HR_AGENT"
+# "draft_offer_doc"
+tool_arguments: Dict # {"salary": 160000, "name": "John"}
+dependencies: List[str] # List of UUIDs to wait for
+# Enrichment Fields
+risk_level: str
+# "HIGH", "MEDIUM", "LOW"
+status: str
+tags: List[str]
+# "PENDING", "APPROVED", "BLOCKED"
+# ["requires_policy", "policy_cleared"]
+context_data: Dict
+# { "template": "...", "policy": "..." }
+7.2. The Tool Registry
+Python
+TOOL_REGISTRY = {
+"stripe_pay": {
+"owner": "FINANCE_AGENT",
+"type": "CODE_TOOL",
+"risk": "HIGH",
+"function": finance.pay_api
+},
+"draft_email": {
+"owner": "COMMS_AGENT",
+"type": "AI_AGENT",
+"risk": "MEDIUM",
+"system_prompt": "You are a comms expert..."
+}
+}
+8. Implementation Roadmap
+1. Foundation (Days 1-3): Set up schemas.py , registry.py , and the Atomizer logic.
+Mr Elite MD
+32. The Brain (Days 4-7): Build the Planning Layer (Classifier + CoT Prompts).
+3. The Conscience (Days 8-12): Build the Logic Layer (Vector DB connection + Judge Node).
+4. The Hands (Days 13-15): Build the Dispatcher and connect 2-3 real tools (Stripe, Gmail).
+5. The Moat (Day 16+): implement the Evaluation Loop to start saving user preferences.
+Final Developer Note
+"We do not trust the LLM to route, manage state, or decide security. We trust the LLM to reason. We trust Python to
+control. Build the Python 'Spine' first, then add the AI 'Brain'."
+Product ValueTechnical ComponentWhy it matters
+"Understand Intent"Planning Layer (CoT)Competitors require strict triggers ("New Row in
+Sheet"). You accept vague goals ("Hire SDE") and
+figure out the steps 3.
+Logic Layer (Policy Engine)This is your Moat. Competitors will execute "Draft
+Offer $200k" blindly. You check the vector DB and
+say "Blocked: Policy Cap is $150k" 4.
+Context Layer (Enrichment)You don't just act on new data. You check past data
+("Last time we rejected this candidate"). This creates
+"Company Memory"5.
+Control Layer (Guardrails)Enterprises won't buy AI that might leak PII or
+hallucinate. Your hardcoded middleware guarantees
+safety before execution6666.
+Evaluation Layer (Learning)The system gets smarter with use. If a user corrects a
+draft, the system updates its own rules. This makes it
+harder to switch away from you over time 7.
+"The Company Conscience"
+"Contextual Memory"
+"Safe Autonomy"
+"Self-Optimizing"
+Mr Elite MD
+4

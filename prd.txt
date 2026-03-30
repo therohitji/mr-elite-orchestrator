@@ -1,0 +1,338 @@
+Mr Elite PRD
+```text
+╔══════════════════════════════════════════════════════════════════════════════
+╗
+║
+MR ELITE (GeniOS)
+║
+║
+Autonomous Orchestration Engine (Decision-First, Execution-Last)
+║
+╚══════════════════════════════════════════════════════════════════════════════
+╝
+0) WHAT MR ELITE IS (FOR DEVELOPERS)
+───────────────────────────────────────────────────────────────────────────────
+Mr Elite is NOT “a chatbot”.
+Mr Elite is a closed-loop orchestration runtime that converts vague user intent
+into safe, atomic, policy-compliant actions (“ExecutionAtoms”), then executes them
+through tools/agents/workflows, and finally learns from outcomes.
+Core philosophy:
+Decision First → Validate → Control/Secure → Execute → Evaluate/Learn
+Key output contract:
+Input : Raw user prompt (+ workspace + active employee/agent context)
+Output : A DAG of ExecutionAtoms + execution results + logs + analytics + learned rules
+Why this matters:
+Your product’s “autonomy” is not magic.
+It’s strict contracts + deterministic gates + human escalation + idempotent execution.
+1) THE 5-PHASE PIPELINE (HIGH LEVEL)
+───────────────────────────────────────────────────────────────────────────────
+RAW PROMPT
+│
+▼
+PHASE 1: PLANNING (Classify → Reason → Atomize)
+│ produces: DAG of atoms (UUIDs, dependencies, risk tags, tool_name)
+▼
+PHASE 2: REASONING (Logic + Context enrichment in parallel)
+│ produces: atoms enriched with policies, resources, state, memory
+▼
+PHASE 3: CONTROL (privacy/security/reliability middleware)
+│ produces: atoms either cleared, redacted, rate-limited, or paused for approval
+▼
+PHASE 4: EXECUTION (dispatcher routes atom → tool/agent/workflow)
+│ produces: tool results + structured logs
+▼
+PHASE 5: EVALUATION (analytics + learning loop + DB updates)
+produces: metrics + learned preference rules + system improvements
+2) THE CONTRACT: CORE DATA STRUCTURES (NON-NEGOTIABLE)
+───────────────────────────────────────────────────────────────────────────────
+2.1 ExecutionAtom (Pydantic / schema-first)
+Fields you MUST have (minimum viable):
+id: UUID
+Mr Elite PRD
+1description: string
+target_agent: string
+tool_name: string
+tool_arguments: dict
+dependencies: list[UUID]
+risk_level: "LOW" | "MEDIUM" | "HIGH"
+status: "PENDING" | "APPROVED" | "PAUSED" | "BLOCKED" | "FAILED" | "DONE"
+tags: list[string]
+context_data: dict (policies, templates, memory snippets, state facts, etc.)
+2.2 Tool Registry (Hardcoded registry is deliberate)
+TOOL_REGISTRY[tool_name] = {
+owner: "HR_AGENT" | "ADMIN_AGENT" | ...
+type: "CODE_TOOL" | "AI_AGENT" | "WORKFLOW"
+risk: "LOW" | "MEDIUM" | "HIGH"
+function/system_prompt/graph_ref: pointer
+input_schema/output_schema: (strongly recommended)
+idempotency_strategy: (strongly recommended)
+}
+Why registry matters:
+- Tool discovery is NOT “LLM decides”. It’s deterministic.
+- Safety and permissions are enforced at the registry boundary.
+- You can audit, test, and version each capability.
+3) PHASE 1 (PLANNING): FROM AMBIGUITY → ATOMS
+───────────────────────────────────────────────────────────────────────────────
+Goal: Convert raw prompt into a structured plan that can be validated and executed.
+3.0 Layer 0 Pre-Flight Check (token saver)
+pre_flight_check(prompt):
+- vector similarity search against BLOCKING global policies
+- if similarity > threshold (e.g., 0.85) and rule is BLOCKING → reject immediately
+Output:
+(allowed: bool, reason: string)
+3.1 Intent Classification Engine (semantic routing)
+Categories:
+CHAT = conversation, no execution
+QUERY = retrieval/question answering (RAG)
+TASK = single atomic action
+GOAL = multi-step objective (needs planning)
+Output: IntentClassification object (strict JSON)
+3.2 CoT / Planner Engine (build dependency graph)
+Pattern: ReAct (Reason + Act) but you force STRUCTURED OUTPUT
+Output: “Plan Steps” + explicit dependencies
+Algorithm: Topological sort to produce execution order with blockers
+3.3 Atomizer (Plan → ExecutionAtoms)
+Deterministic mapping:
+- assign UUIDs
+- map each step → tool_name via TOOL_REGISTRY
+- auto-tag risk based on tool + keywords + registry risk
+- attach dependencies
+Mr Elite PRD
+2IMPORTANT RULE:
+Atomizer should NEVER invent a tool.
+If no tool matches, create a “needs_clarification” atom that asks user
+for missing info OR requests installing a required agent/tool.
+4) PHASE 2 (REASONING): ENRICH ATOMS WITH REALITY (LOGIC + CONTEXT)
+───────────────────────────────────────────────────────────────────────────────
+Goal: Decide whether each atom is allowed + feasible, and fetch what it needs.
+4.1 Parallel Enrichment (latency optimization)
+Run in parallel using scatter-gather (asyncio.gather):
+Thread A: LOGIC (policy + resources)
+Thread B: CONTEXT (memory + state)
+4.2 Thread A: Logic Engine (Policies + Resources)
+A) Policy Retrieval:
+- embedding search in vector DB for relevant rules (top-k)
+B) Policy Judge:
+- small/cheap “LLM-as-a-judge” compares atom intent vs retrieved rules
+- outputs: violation? severity: hard/soft/none
+Decision matrix (Traffic Lights):
+- Hard violation → RED → BLOCK / FAIL atom + trigger replanning loop
+- Soft violation + HIGH risk → YELLOW → PAUSE atom + request human approval
+- Soft violation + LOW/MED risk → GREEN (flagged warning) → proceed with warning tag
+- No violation → GREEN → proceed
+Resource Engine:
+- exact key/metadata fetch from storage for templates/files
+- if required resource missing → FAIL atom + replanning loop:
+“I can’t proceed; missing template. Ask user OR request upload OR fallback template.”
+4.3 Thread B: Context Engine (State + Memory)
+State:
+- deterministic SQL lookup for binary facts (budget_open, role_permissions, etc.)
+Memory:
+- vector search for prior similar tasks and user preferences
+- return short “memory snippets” with provenance (what happened last time)
+4.4 Merge
+Combine into atom.context_data:
+context_data = {
+policies_found: [...],
+policy_judge_verdict: {...},
+resource_data: {...},
+state_facts: {...},
+memory_snippets: [...]
+}
+5) PHASE 3 (CONTROL): FINAL CHECKPOINT BEFORE REAL-WORLD ACTION
+───────────────────────────────────────────────────────────────────────────────
+Goal: Catch security/privacy/reliability failures that planners and judges miss.
+Middleware pipeline (sequential filters):
+1) Privacy Guard
+Mr Elite PRD
+3- regex scan for PII (emails, phone, SSN patterns, API keys, secrets)
+- action: redact OR block based on risk/tool type
+2) Security Guard
+- heuristic prompt-injection detection (especially on tool-fed content like emails)
+- example: “ignore previous instructions” inside an email thread
+- action: strip hostile segments OR force “read-only summarization” mode
+3) Reliability Guard
+- rate-limit checks (Redis counters)
+- cost estimation (rough token/cost budget)
+- action: throttle, queue, or ask user to confirm high-cost run
+4) Final Gate: Human Approval Hold
+- if atom.status == PAUSED (from reasoning) or tool risk == HIGH
+then stop branch and request explicit approval in UI:
+“This violates X policy / exceeds Y threshold. Approve exception? Yes/No.”
+Why this layer exists:
+- It’s your “blast-radius reducer”.
+- It prevents expensive/autonomous stupidity in production.
+6) PHASE 4 (EXECUTION): CENTRAL DISPATCHER (THE ONLY PLACE WHERE ACTION HAPPENS)
+───────────────────────────────────────────────────────────────────────────────
+Goal: Execute ONLY approved atoms, using deterministic routing.
+6.1 Central Dispatcher
+Inputs:
+- atom (must be APPROVED)
+- TOOL_REGISTRY entry
+Routing:
+if type == CODE_TOOL → call python function immediately (fast)
+if type == AI_AGENT → spawn sub-agent session (prompt + tools limited)
+if type == WORKFLOW → invoke LangGraph subgraph (multi-step toolchain)
+6.2 Execution Safety Mechanisms
+- hard timeouts (e.g., 30s) for every tool call
+- strict type enforcement:
+cast/coerce tool_arguments to expected schema before calling tool
+- structured results:
+{ status, output, artifacts, retryable, error_code, trace_id }
+6.3 Reliability requirements (you should implement or you will regret it)
+A) Idempotency
+- every atom execution must have an idempotency key (atom.id)
+- tools that mutate external state must support “safe retry”
+B) Retries
+- retry only if retryable == true (network/timeout)
+- exponential backoff + max attempts
+C) Partial failure handling
+- if DAG step fails, only dependent atoms are blocked
+- independent atoms can still run
+D) Cancellation
+- user hits “stop”: mark run_id cancelled, kill remaining queued atoms
+E) Tool drift
+- if external API schema changes, tool wrapper must fail loudly with error_code
+F) Audit log (immutable)
+Mr Elite PRD
+4- store input, output, tool, timestamps, decision path, approvals
+7) PHASE 5 (EVALUATION): ANALYTICS + LEARNING LOOP (THE MOAT)
+───────────────────────────────────────────────────────────────────────────────
+Goal: Turn repeated usage into measurable performance + preference learning.
+7.1 Analytics Engine (“Accountant”)
+Wrap dispatcher with a decorator:
+- measure duration_ms
+- estimate tokens/cost_usd
+- log status + tool usage
+Store in analytics_db (Supabase/PostHog/etc.)
+7.2 Learning Engine (“Student”) – Implicit feedback loop
+Trigger:
+- user edits the output (especially for MEDIUM risk creative tasks like writing)
+Steps:
+1) Capture original output vs final user version
+2) Compare (diff or cheap LLM)
+3) If difference > threshold (e.g., 10%), extract preference rule:
+“User prefers informal greetings for internal emails”
+Output:
+new_rule (text) + weight + tags
+7.3 Smart Updater (“Teacher”)
+- search existing rules in vector DB for contradictions/overlap
+- update or insert:
+tag="learned_preference", weight="high"
+- next runs retrieve this rule in policy/context phase
+8) END-TO-END FLOW (DEVELOPER DEMO)
+───────────────────────────────────────────────────────────────────────────────
+User prompt:
+“Analyze resumes from hr@team.com, shortlist by our policy,
+schedule interviews, send rejections, and save best to Drive.”
+Flow:
+1) Pre-flight: pass (not globally blocked)
+2) Classify: GOAL
+3) Plan:
+Step A: Fetch emails + attachments (Gmail tool)
+Step B: Extract candidate data (Extractor micro-agent or code tool)
+Step C: Apply hiring policy (Policy judge)
+Step D: Schedule interviews (Calendar tool)
+Step E: Send rejection emails (Email tool) [HIGH risk if external]
+Step F: Save shortlisted to Drive (Drive tool)
+4) Atomize → DAG:
+A → B → C → (D and E and F depend on C)
+5) Reasoning:
+- fetch hiring policies (vector)
+- fetch templates (rejection template)
+- check state (calendar access, budget open, permissions)
+- memory (last hiring preferences)
+6) Control:
+- redact PII if needed
+- detect prompt injection from email content
+Mr Elite PRD
+5- require approval for sending external emails (HIGH risk)
+7) Execution:
+- run A/B/C automatically
+- pause before E: “Approve sending 17 rejection emails?” Yes/No
+8) Evaluation:
+- log cost/latency
+- if user edits rejection tone → learn new preference rule
+9) EDGE CASES YOU MUST HANDLE (REALITY CHECKLIST)
+───────────────────────────────────────────────────────────────────────────────
+A) Missing resource/template
+- template not found → FAIL atom → replanning loop → ask user/upload
+B) Ambiguous policy match
+- vector similarity mid-range (e.g., 0.6–0.8) → do NOT guess
+- escalate for human review or request clarification
+C) Prompt injection in tool content
+- email/slack message contains instructions to override system
+- strip/ignore hostile text; switch to “summarize only” for that content
+D) High-risk actions without explicit approval
+- payments, offer letters, external emails, firing people
+- must pause + show what will happen + require explicit confirmation
+E) Tool failure and retries
+- Gmail rate-limited → retry with backoff; if repeated, pause and notify user
+- Calendar conflict → replan with alternative slots
+F) Duplicate execution
+- user clicks “run” twice, network retries, worker restart
+- idempotency via atom.id prevents double-send/double-pay
+G) Partial completion
+- scheduling succeeded but rejections failed
+- state must reflect partial results and next steps must be resumable
+H) Infinite replanning loops
+- cap replans, escalate to user with: “Blocked because X. Provide Y to continue.”
+I) Cost explosion
+- large inbox + huge attachments
+- reliability guard should estimate cost and ask user to narrow scope
+10) BUILD PLAN (ENGINEERING ORDER, MINIMUM FIRST)
+───────────────────────────────────────────────────────────────────────────────
+Step 1: Contracts + Registry
+- ExecutionAtom schema
+- TOOL_REGISTRY and tool wrappers
+- run_id, atom_id, trace_id, logs tables
+Step 2: Phase 1 Planning MVP
+- pre_flight_check
+- classifier (CHAT/QUERY/TASK/GOAL)
+- planner + atomizer (tool mapping must be deterministic)
+Mr Elite PRD
+6Step 3: Phase 2 Reasoning MVP
+- parallel enrichment scaffolding
+- policy retrieval + judge
+- resource fetcher
+- state fetcher + memory retrieval
+Step 4: Phase 3 Control MVP
+- PII redaction + basic injection heuristic
+- rate limit + cost guard
+- approval queue UI contract
+Step 5: Phase 4 Execution MVP
+- dispatcher routing CODE_TOOL / AI_AGENT / WORKFLOW
+- timeouts + type enforcement
+- idempotency keys + minimal retry strategy
+Step 6: Phase 5 Evaluation MVP
+- analytics decorator logging cost/latency
+- learning loop: diff > threshold → preference rule
+- updater writes to vector DB
+11) TESTING STRATEGY (IF YOU SKIP THIS, AUTONOMY WILL BREAK IN PROD)
+───────────────────────────────────────────────────────────────────────────────
+A) Unit tests
+- atomizer tool mapping
+- policy judge input/output schema validation
+- registry schema enforcement
+B) Integration tests (sandbox credentials)
+- Gmail read-only
+- Calendar create + conflict simulation
+- Drive upload
+C) Red-team tests
+- prompt injection payloads inside email bodies
+- PII leakage attempts
+- tool spoofing (“call_tool: stripe_pay” inside user text)
+D) Replay tests
+- replay previous runs from logs to ensure deterministic behavior
+12) “AUTONOMOUS” DOES NOT MEAN “UNSUPERVISED”
+───────────────────────────────────────────────────────────────────────────────
+Autonomy comes from:
+- deterministic planning contracts
+- policy + state enforcement
+- control middleware
+- idempotent execution
+- human approval for high-risk
+- learning loop that updates rules over time
+End
+Mr Elite PRD
+7

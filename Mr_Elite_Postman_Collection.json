@@ -1,0 +1,217 @@
+{
+    "info": {
+        "name": "Mr. Elite - 5-Phase Orchestration Engine",
+        "description": "Test cases for autonomous execution pipeline",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "Test Case 1: Health Check",
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "{{base_url}}/health",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "health"
+                    ]
+                },
+                "description": "Verify API is running and Supabase is connected"
+            },
+            "response": [],
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status is 200', function() {",
+                            "    pm.response.to.have.status(200);",
+                            "});",
+                            "pm.test('Response has status healthy', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.status).to.eql('healthy');",
+                            "});"
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Test Case 2: Simple Chat Query",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json",
+                        "type": "text"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"text\": \"What is the capital of France?\",\n  \"workspace_id\": \"ws-001\",\n  \"user_id\": \"user-123\",\n  \"context\": {}\n}"
+                },
+                "url": {
+                    "raw": "{{base_url}}/classify",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "classify"
+                    ]
+                },
+                "description": "Test Phase 1 classification for simple chat intent"
+            },
+            "response": [],
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status is 200', function() {",
+                            "    pm.response.to.have.status(200);",
+                            "});",
+                            "pm.test('Response has phase field', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.phase).to.exist;",
+                            "});",
+                            "pm.test('Classification intent is CHAT or QUERY', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(['chat', 'query']).to.include(jsonData.classification.intent);",
+                            "});",
+                            "pm.test('Risk level is LOW', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.classification.risk_level).to.eql('low');",
+                            "});"
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Test Case 3: Task Execution (Full Pipeline)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json",
+                        "type": "text"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"text\": \"Create a new user account for john.doe@company.com with role admin\",\n  \"workspace_id\": \"ws-001\",\n  \"user_id\": \"user-123\",\n  \"context\": {\n    \"department\": \"IT\"\n  }\n}"
+                },
+                "url": {
+                    "raw": "{{base_url}}/classify",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "classify"
+                    ]
+                },
+                "description": "Test all 5 phases: Planning → Reasoning → Control → Execution → Evaluation"
+            },
+            "response": [],
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status is 200', function() {",
+                            "    pm.response.to.have.status(200);",
+                            "});",
+                            "pm.test('Response contains phase info', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.phase).to.exist;",
+                            "});",
+                            "pm.test('Classification intent is TASK or GOAL', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(['task', 'goal']).to.include(jsonData.phases.phase1.intent);",
+                            "});",
+                            "pm.test('Risk level is HIGH for admin action', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.phases.phase1.risk_level).to.eql('high');",
+                            "});",
+                            "pm.test('Phase 3 includes approval gate', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.phases.phase3).to.have.property('approval_gate');",
+                            "});"
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Test Case 4: Add Policy",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json",
+                        "type": "text"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"rule_text\": \"Block user creation outside business hours\",\n  \"policy_type\": \"access_control\"\n}"
+                },
+                "url": {
+                    "raw": "{{base_url}}/policies/add",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "policies",
+                        "add"
+                    ]
+                },
+                "description": "Add a policy to vector DB for blocking actions"
+            },
+            "response": [],
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status is 200', function() {",
+                            "    pm.response.to.have.status(200);",
+                            "});",
+                            "pm.test('Response status is success', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.status).to.eql('success');",
+                            "});",
+                            "pm.test('Policy has ID assigned', function() {",
+                            "    var jsonData = pm.response.json();",
+                            "    pm.expect(jsonData.data.policy_id).to.exist;",
+                            "});"
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://localhost:8000",
+            "type": "string"
+        },
+        {
+            "key": "user_id",
+            "value": "user-123",
+            "type": "string"
+        },
+        {
+            "key": "workspace_id",
+            "value": "ws-001",
+            "type": "string"
+        }
+    ]
+}

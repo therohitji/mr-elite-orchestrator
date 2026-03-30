@@ -1,0 +1,2553 @@
+States Layer (main)
+States Layer (main)
+1➡️
+STATES LAYER (DB + SUPABASE) BUILD PLAN
+Goal: Crash-proof workflows + resumable execution + queryable audit history
+STEP 1 — Lock the “State Contract” (what must be stored, always)
+Strategy:
+A DB only works when the write contract is strict. Before tables, finalize the exact fields
+Mr Elite will write on every checkpoint.
+Non-negotiable fields (minimum):
+1. session_id UUID (primary key)
+2. org_id UUID (tenant isolation)
+3. user_id UUID (who initiated)
+4. status enum-ish text: running | paused | completed | failed
+5. current_node text (where execution is paused/resuming)
+6. state_data jsonb (the black box)
+7. created_at, updated_at timestamps
+State Data must contain:
+A) messages[]
+B) plan / atoms
+C) tool_calls[]ordered log (human/ai/tool)
+current plan snapshot (optional but recommended)
+evidence of tool usage (ids, payload summaries, results)
+D) approvals[]
+E) derived_state
+F) version
+Deliverable:approval requests + decisions
+small computed fields used by UI (progress %, blockers, etc.)
+schema version for migrations
+A single JSON schema document for state_data that devs must follow.
+STEP 2 — Design the Table(s) (Decide 1-table vs 2-table architecture)
+You have 2 viable designs:
+Option A (MVP-fast): Single table only
+workflow_states holds snapshot + history in state_data
+Pros: simplest, fastest to ship
+Cons: jsonb can become huge; analytics queries are painful later
+Option B (recommended): Snapshot table + Event log table
+workflow_states: latest snapshot only (small, fast)
+workflow_state_events: append-only log (scales, queryable)
+Pros: clean audit trail, easier analytics, avoids giant json
+Cons: 1 extra table
+My call:
+If you want “proper DB” (not a demo), do Option B now.
+It prevents the classic failure: jsonb bloats, updates slow, and you regret it in 3 weeks.
+Deliverable:
+Final ERD + table definitions.
+STEP 3 — Implement Supabase Tables (DDL)
+3.1 workflow_states (snapshot row per session)
+Columns:
+session_id uuid pk default gen_random_uuid()
+org_id uuid not null
+user_id uuid null
+status text check in ('running','paused','completed','failed') default 'running'
+current_node text not null
+priority text default 'medium'
+state_data jsonb not null
+created_at timestamptz default now()
+updated_at timestamptz default now()
+3.2 workflow_state_events (append-only event stream) [RECOMMENDED]
+Columns:
+event_id uuid pk default gen_random_uuid()
+session_id uuid not null (fk -> workflow_states.session_id)
+org_id uuid not null
+user_id uuid null
+event_type text not null (node_entered | tool_called | tool_result | approval_requested | approval_decision | error | user_message | ai_message)
+node text null
+payload jsonb not null (the event body)
+created_at timestamptz default now()
+States Layer (main)
+2Deliverable:
+SQL migration scripts ready to run in Supabase.
+STEP 4 — Row Level Security (RLS) + Policies (no compromise)
+Strategy:
+States contain the entire company operating history. If RLS is weak, you’re dead.
+Rules:
+Only members of org/workspace can read/write that org’s sessions
+Only service role can do privileged writes if you choose
+Implementation approach:
+A) Ensure you have org membership mapping (workspace_memberships or similar)
+B) Enable RLS on workflow_states and workflow_state_events
+C) Policies:
+SELECT: user can read if they belong to org_id
+INSERT/UPDATE: user can write only if they belong to org_id
+Optional: allow only backend service role to write events (safer)
+Deliverable:
+RLS enabled + policies tested with a non-member account.
+STEP 5 — Indexing + Performance (make queries fast)
+Goal queries:
+1. Fetch a session fast: by session_id + org_id
+2. List running sessions: by org_id + status + updated_at
+3. Approval queue: org_id + status='paused' + current_node='human_approval'
+4. Search inside jsonb (only for targeted keys, not full-text)
+Indexes:
+workflow_states(org_id, status, updated_at desc)
+workflow_states(org_id, current_node)
+workflow_state_events(session_id, created_at asc)
+workflow_state_events(org_id, created_at desc)
+JSONB indexes (only if needed):
+GIN on state_data -> for specific keys you will filter on (avoid indexing huge blobs blindly)
+Deliverable:
+EXPLAIN plans for the top 3 queries.
+STEP 6 — Write APIs for Ingestion (“Continuous Checkpointing”)
+This is where most systems fail.
+Strategy:
+You must checkpoint at every node boundary, not at the end.
+Required backend functions:
+A) start_session(org_id, user_id, initial_state)
+inserts workflow_states row (and first event)
+B) checkpoint(session_id, patch)
+updates workflow_states.state_data (snapshot)
+updates workflow_states.current_node, status, updated_at
+inserts workflow_state_events row(s)
+C) append_event(session_id, event_type, payload)
+insert-only into workflow_state_events
+Rules:
+snapshot updates must be idempotent (retry-safe)
+event inserts should include an idempotency_key to avoid duplicates on retries
+Deliverable:
+3 endpoints + unit tests + retry behavior.
+STEP 7 — Retrieval + Hydration (“Resume exactly where it stopped”)
+Strategy:
+The resume mechanism must be deterministic.
+Functions:
+A) load_session(session_id) -> returns workflow_states row
+B) load_events(session_id, since=timestamp) -> returns ordered event stream
+C) hydrate_runtime_state(snapshot, events) -> reconstruct in-memory state for LangGraph / orchestrator
+Resume logic:
+if status='paused' and current_node='human_approval' -> do NOT call LLM, wait UI approval
+if status='running' but last checkpoint old -> resume node safely
+if status='failed' -> show error + last good state + recovery suggestion
+States Layer (main)
+3Deliverable:
+A working “resume after crash” demo: kill server mid-run, restart, continue.
+STEP 8 — Retention, Bloat Control, and Cost (avoid state_data death-spiral)
+Your own spec warns about bloat. Fix it now.
+Strategy:
+A) Windowing:
+keep last N (e.g., 50) raw messages in snapshot
+summarize older history into a compact “summary_block” inside state_data
+B) Events table keeps everything:
+snapshot is small
+events can be archived later to cold storage if needed
+C) Hard limits:
+max state_data size threshold (if exceeded, force summarization)
+Deliverable:
+A background job (or cron) that compacts old sessions.
+STEP 9 — Acceptance Tests (prove the layer works)
+Must-pass tests:
+1. Multi-tenant isolation: user from org A cannot read org B session
+2. Crash recovery: resume continues correctly at correct node
+3. Human approval pause: session remains paused for 2 days, resumes after approval
+4. Retry safety: same checkpoint called twice does not duplicate critical actions
+5. Performance: list running sessions returns in <200ms with 10k sessions
+Deliverable:
+A test checklist + fixtures.
+States Layer (main)
+4➡️ ============================================================
+If you skip RLS or idempotency now, you will pay for it later with production disasters.
+Order that prevents rework
+1 Step 1 State Contract (schema_version + required keys)
+2 Step 3 Tables + constraints
+3 Step 4 RLS policies (tested with real accounts)
+4 Step 5 Indexes
+Then
+5 Step 7 APIs (start, append_event, checkpoint, load)
+Then
+6 Step 6 checkpoint policy enforcement in orchestrator
+Then
+7 Step 8 locks
+Then
+8 Step 9 retention
+============================================================
+WHAT WE BUILD FIRST (NO SHORTCUTS)
+Deliverable of Step 10
+A checklist that must pass before go live
+Dashboard list returns fast due to indexes
+Insert 10k sessions, 1M events (simulated)
+5 Performance test
+Org A user cannot read org B session or events
+4 Tenant isolation test
+Ensure only 1 record exists
+Send same append_event twice with same idempotency_key
+3 Idempotency test
+Approve and resume at correct node
+Wait (simulate 2 days)
+Pause session waiting approval
+2 Approval pause test
+Restart and ensure system sees tool_called without tool_result and safely retries or reconciles
+Kill worker before tool_result
+Execute tool_called
+Start session
+Functional tests
+1 Resume test
+============================================================
+STEP 10) ACCEPTANCE TESTS (YOU DO NOT SHIP WITHOUT THESE)
+Queries become slow due to massive event table
+DB grows without bound
+Edge cases handled by Step 9
+Deliverable of Step 9
+Retention rules documented + a cron job plan
+keep “summary events” to preserve storyline
+scheduled job that copies old events to storage and deletes from hot table
+Implement later
+Archive older events to storage or a cold table
+workflow_state_events keep for X days in hot DB (eg 90 to 180)
+workflow_states keep forever (tiny snapshot)
+Policy
+============================================================
+STEP 9) RETENTION + ARCHIVAL (CONTROL COSTS)
+Race conditions during resume
+Duplicate emails, duplicate calendar events
+Edge cases handled by Step 8
+Deliverable of Step 8
+A locking mechanism so one session runs in one worker at a time
+Recommended for Supabase
+Lease table pattern is easier to reason about
+States Layer (main)
+5locked_until
+Worker must renew lease
+locked_by
+session_id
+Solutions (pick one)
+Option 1 (simple) advisory lock in Postgres per session_id
+Option 2 workflow_state_locks table with lease
+Problem
+If two workers pick the same session, you can double execute tools
+============================================================
+STEP 8) CONCURRENCY + LOCKS (PREVENT DOUBLE EXECUTION)
+Resume returns events out of order
+Client sends checkpoint twice due to network retry
+Two servers try to append events simultaneously
+Edge cases handled by Step 7
+Deliverable of Step 7
+OpenAPI spec or simple route spec the dev team follows
+next node set
+status running
+approval_decision event
+Must do
+F) resume_after_approval
+Input: session_id, decision (approve/deny), notes
+Output: running session
+create approval_requested event
+current_node becomes human_approval (or your naming)
+status becomes paused
+Must do
+E) pause_for_approval
+Input: session_id, approval_payload
+Output: paused session
+return deterministic event ordering
+return current_node and status
+Must do
+D) load_session_for_resume
+Input: session_id
+Output: snapshot + last_k_events (or events since last_checkpoint)
+update updated_at
+optimistic concurrency with version
+Must do
+C) checkpoint_snapshot
+Input: session_id, patch (json merge patch or full state_data), current_node, status, last_node
+Output: new version
+update workflow_states.last_event_at
+enforce uniqueness
+compute next sequence safely (transaction)
+Must do
+B) append_event
+Input: session_id, event_type, node, payload, idempotency_key
+Output: event_id, sequence
+sequence starts at 1
+insert first event (checkpoint / node_entered)
+create workflow_states row
+Must do
+A) start_session
+Input: org_id, user_id, title, initial_node, initial_state_data
+Output: session_id
+You need these minimum operations
+============================================================
+STEP 7) API CONTRACTS (BACKEND ENDPOINTS / RPC FUNCTIONS)
+Human approval is required but system continues anyway
+You resend an email because the system forgot it already happened
+System crashes between tool_called and tool_result
+States Layer (main)
+6Edge cases handled by Step 6
+Deliverable of Step 6
+A written “checkpoint policy” that engineers implement exactly
+6.3 State size management
+Snapshot keeps only last N messages
+Older content must be summarized into summaries[]
+Full history remains in events table
+recovery success
+approval_decision
+tool_result
+node_entered
+6.2 Snapshot update rules
+Snapshot should be updated at least
+On errors (failed) + recovery attempt (recovery)
+On approval decision (resume)
+On approval requested (pause)
+On node transitions (node_entered, node_exited)
+After tool result (record tool_result + snapshot)
+Before tool call (record tool_called)
+After AI “thinking” output (plan update)
+6.1 Checkpoint triggers (mandatory points)
+============================================================
+STEP 6) CHECKPOINTING STRATEGY (WHEN AND WHAT TO WRITE)
+Resume takes seconds due to missing event index
+Dashboard becomes slow at 5k sessions
+Edge cases handled by Step 5
+Deliverable of Step 5
+Indexes created + explain plan for top queries
+5.3 JSONB indexes only if you truly filter on keys
+Do NOT blindly GIN index whole state_data if it grows
+Only index specific paths you will query frequently
+unique(session_id, idempotency_key)
+index(org_id, created_at desc)
+index(session_id, sequence asc)
+workflow_state_events
+unique(session_id)
+index(org_id, current_node)
+index(org_id, status, updated_at desc)
+5.2 Create indexes
+workflow_states
+events by session_id order by sequence asc
+Q4 Timeline view
+org_id + status=paused + current_node=human_approval
+Q3 Approval queue
+session_id + org_id
+Q2 Fetch one session to resume
+order by updated_at desc
+filter status in (running, paused)
+filter org_id
+5.1 Decide your top queries
+Q1 List active sessions by org (dashboard)
+============================================================
+STEP 5) INDEXING + PERFORMANCE DESIGN (SO UI IS FAST)
+Intern or user with wrong membership reading everything
+Data leak across companies (this is existential)
+Edge cases handled by Step 4
+Deliverable of Step 4
+RLS policies that pass real tests, not theoretical
+user not in org cannot read anything
+user in org A cannot read org B
+States Layer (main)
+74.4 Validate policies with 2 test accounts
+Only backend service role can write checkpoints and events
+Client can read
+Recommended stance
+update/delete: nobody (disable)
+insert: service role only (recommended) OR org member only (if you trust client)
+select: org member only
+For workflow_state_events
+delete: usually service role only
+update: org member only (or service role only)
+insert: org member only (or service role only)
+select: org member only
+4.3 Policies you need
+For workflow_states
+org_memberships table or workspace_memberships table
+Rule logic example
+Allow if exists (
+select 1 from org_memberships m
+where m.org_id = workflow_states.org_id
+and m.user_id = auth.uid()
+)
+4.2 Define your membership rule
+You need a reliable join condition:
+workflow_state_events
+workflow_states
+4.1 Enable RLS on BOTH tables
+============================================================
+STEP 4) ROW LEVEL SECURITY (RLS) + POLICIES (TENANT ISOLATION)
+Accidental edits to history (events immutable)
+Non deterministic ordering (sequence ensures correct replay)
+Duplicate events on retries (blocked by unique constraint)
+Edge cases handled by Step 3
+Deliverable of Step 3
+SQL migration that runs cleanly inside Supabase SQL editor
+3.4 Trigger to auto update updated_at on workflow_states
+Supabase best practice: trigger updated_at on UPDATE
+unique(session_id, idempotency_key)
+unique(session_id, sequence)
+Unique constraints
+created_at timestamptz not null default now()
+payload jsonb not null
+idempotency_key text not null
+sequence bigint not null (monotonic per session)
+node text null
+event_type text not null
+user_id uuid null
+org_id uuid not null
+session_id uuid not null references workflow_states(session_id) on delete cascade
+event_id uuid pk default gen_random_uuid()
+Suggested columns
+Must include sequence for deterministic ordering
+Must include idempotency_key
+Never update events (immutability)
+3.3 Create workflow_state_events (append only)
+Key rules
+last_event_at timestamptz null
+updated_at timestamptz not null default now()
+created_at timestamptz not null default now()
+version int not null default 1 (optimistic concurrency)
+States Layer (main)
+8state_data jsonb not null
+title text null (nice for UI lists)
+priority workflow_priority not null default medium
+last_node text null
+current_node text not null
+status workflow_status not null default running
+user_id uuid null
+org_id uuid not null
+session_id uuid pk default gen_random_uuid()
+Suggested columns
+Must be small
+Updated frequently (checkpointing)
+One row per active or historical session
+3.2 Create workflow_states (snapshot)
+Key rules
+event_type: node_entered, node_exited, user_message, ai_message, tool_called, tool_result,
+approval_requested, approval_decision, error, recovery, checkpoint
+workflow_priority: low, medium, high, urgent
+workflow_status: running, paused, completed, failed, cancelled
+Recommended enums
+3.1 Create enums (Postgres enums or text with CHECK)
+Use enums if you want strong correctness
+============================================================
+STEP 3) SUPABASE DDL: CREATE TYPES, TABLES, CONSTRAINTS
+You can’t debug production issues because history is overwritten
+You can’t answer “who approved this” reliably
+State blob becomes 10MB and updates start timing out
+Edge cases handled by Step 2
+Deliverable of Step 2
+Final ER diagram and naming rules
+You want a clean timeline and ability to rebuild
+Audit queries become painful
+Overwriting one giant JSON is slow and produces write amplification
+JSONB snapshots grow quickly
+Why events table is mandatory in a real system
+Minimum recommended tables
+A) workflow_states
+snapshot row per session
+B) workflow_state_events append only history
+Optional but powerful later
+C) workflow_state_artifacts for large blobs (files, long texts) referenced from events
+D) workflow_state_locks for distributed lock / concurrency control
+============================================================
+STEP 2) DEFINE TABLE ARCHITECTURE (WHAT TABLES YOU WILL HAVE)
+Retries duplicate events and trigger double sends (email twice, calendar twice)
+Resume fails because current_node missing
+Random keys appear and break UI
+Edge cases handled by Step 1
+Deliverable of Step 1
+A single JSON schema doc (even a simple markdown spec) that devs must follow
+No schema, no stability
+idempotency_key = hash(session_id + node + event_type + sequence)
+If backend retries, it should not create duplicate “tool_result” events.
+1.3 Add idempotency rules (to prevent duplicate tool actions)
+Every critical event write must include
+full message stream if you want full forensic history
+errors and recovery actions
+approvals requested and approvals decided
+node enter and node exit
+every tool call and tool result
+Event log should store
+States Layer (main)
+9minimal UI state
+current node, status
+current plan, current atom
+latest messages (last 30 to 80)
+1.2 Decide what goes to snapshot vs event log
+Snapshot should store
+ui: { progress_percent, status_message, highlights[] }
+errors: { last_error?, error_count, last_recovery_action? }
+approvals: { required: bool, queue[] , last_decision? }
+tools: { last_tool_call?, tool_call_history_ref? }
+plan: { goal, atoms[], active_atom_id, progress }
+memory: { short_term[], long_term_refs[], summaries[] }
+routing: { current_node, last_node, next_nodes_candidate[] }
+run: { run_id, started_at, last_checkpoint_at, attempt, environment }
+schema_version: int
+Required top level keys (state_data JSONB snapshot)
+1.1 Define “workflow state” as a strict shape
+This prevents devs from dumping random keys in JSON and breaking resume logic.
+============================================================
+STEP 1) FINALIZE THE STATE CONTRACT (SCHEMA THAT MR ELITE MUST WRITE)
+If you only store one JSON blob, it will bloat and become slow. Proper DB = snapshot table + events table.
+Core design principle
+Snapshot vs Event log
+Snapshot = latest working memory (small, fast, overwrite)
+Event log = append only history (scales, queryable, audit safe)
+1. Cost control: State history cannot grow unbounded and kill Postgres performance
+2. Tenant safety: No org can ever read another org’s state data (RLS must be correct)
+3. Query: We can quickly list “running”, “paused for approval”, “failed”, “recent”
+4. Audit: We can reconstruct what happened, who approved what, and which tools were called
+5. Resume: If the server dies mid run, we can continue from the exact node safely
+What this layer must guarantee (non negotiable)
+STATES LAYER DATABASE + SUPABASE BUILD (DETAILED, WITH LOGIC + EDGE CASES)
+STEP 1
+STEP 1 — STATE CONTRACT (STATE_DATA JSON SCHEMA) FOR STATES LAYER
+Goal: Define a strict, versioned state_data structure so Mr Elite never writes random JSON.
+This contract is the foundation for resume, audit, approvals, idempotency, and UI.
+============================================================
+1.0 PRINCIPLES (WHY THIS CONTRACT LOOKS LIKE THIS)
+============================================================
+A) Snapshot is NOT full history
+Snapshot (state_data) must stay small and fast to update.
+Full history belongs to workflow_state_events (Step 2/3).
+B) Deterministic resume requires explicit pointers
+We must always know:
+- where we are (current_node)
+- what to do next (next_actions or next_nodes_candidate)
+- what has already happened (tool call receipts, approvals, event pointers)
+C) Every mutable structure must be versioned
+We will evolve state_data. schema_version is mandatory.
+No version = broken migrations later.
+D) Everything critical must be idempotent
+Tool actions must never run twice accidentally.
+We store receipts with idempotency keys and external ids.
+============================================================
+1.1 STATE_DATA TOP LEVEL SHAPE (REQUIRED KEYS)
+============================================================
+States Layer (main)
+10state_data (JSONB) required keys
+1) schema_version
+2) metaint
+object
+3) execution
+4) contextobject
+object
+5) memoryobject
+6) plan
+7) approvalsobject
+object
+8) tools
+9) errorsobject
+object
+10) uiobject
+If any of these are missing, your orchestrator must refuse to resume and trigger a repair routine.
+============================================================
+1.2 DETAILED CONTRACT (FIELD BY FIELD)
+============================================================
+1) schema_version (required)
+- Type: int
+- Current: 1
+- Rule: Increment only when you change shape meaningfully
+2) meta (required)
+Purpose: identity and safe resume metadata
+Fields
+- org_id: uuid string (must match workflow_states.org_id)
+- user_id: uuid string or null
+- session_id: uuid string (optional inside json, but good for debugging)
+- created_at: ISO datetime string
+- last_checkpoint_at: ISO datetime string
+- environment: "prod" | "staging" | "dev"
+- tags: string array (optional)
+Edge cases
+- org_id mismatch between row and json must be treated as corruption
+3) execution (required)
+Purpose: runtime execution pointers for deterministic resume
+Fields
+- status: "running" | "paused" | "completed" | "failed" | "cancelled"
+- current_node: string (must match workflow_states.current_node)
+- last_node: string or null
+- run_id: string (unique per execution run, changes on resume)
+- attempt: int (increments each resume after failure)
+- checkpoint_seq: int (monotonic within the snapshot)
+- next_nodes_candidate: string array (optional but useful)
+- last_event_sequence: int or null (if using event log, pointer to last event applied)
+Edge cases
+- status paused must also include approvals.required true OR pause_reason
+- current_node missing means you cannot resume safely
+4) context (required)
+Purpose: the minimum “working context” needed to continue without reloading everything
+Fields
+- user_intent: object
+- raw_input: string (latest user instruction)
+- intent_label: string (classification output)
+- confidence: number 0 to 1
+- policy_refs: array of objects (policy ids returned by retrieval)
+- policy_id: uuid or string
+- score: number
+- excerpt: string (short)
+- resources_refs: array of objects (resource ids)
+- resource_id: uuid or string
+- type: string
+- score: number
+- entities: object (extracted facts for the session)
+- company_names: string array
+- people: string array
+- dates: string array
+- misc: object
+Edge cases
+- policy_refs must be snapshots of what was used, not “live” policies only
+because policies can change later and you still need auditability
+States Layer (main)
+115) memory (required)
+Purpose: stores only short and medium memory needed now
+Fields
+- short_term_messages: array (bounded, last 30 to 80)
+Message object shape
+- role: "user" | "assistant" | "tool" | "system"
+- content: string
+- created_at: ISO datetime
+- message_id: string (optional)
+- tool_name: string (only if role tool)
+- tool_call_id: string (if tool related)
+- summaries: array (compressed older history)
+Summary object shape
+- summary_id: string
+- range: { from_seq: int, to_seq: int }
+- content: string
+- created_at: ISO datetime
+- long_term_refs: array (references only)
+- memory_id: uuid or string
+- type: "profile" | "policy" | "resource" | "past_session" | "note"
+- score: number
+Hard limits (must enforce)
+- short_term_messages max: 80
+- each content max chars: define (eg 4000) else summarize
+- summaries max: 20
+Edge cases
+- If messages exceed limit, do summarization immediately and trim
+- Never drop tool receipts from tools.receipts (see tools section)
+6) plan (required)
+Purpose: what Mr Elite is doing, atom level
+Fields
+- goal: string (one sentence)
+- atoms: array of atom objects (ordered)
+Atom object shape
+- atom_id: string (stable)
+- title: string
+- objective: string
+- status: "pending" | "running" | "blocked" | "done" | "skipped"
+- dependencies: atom_id array
+- inputs: object
+- outputs: object
+- started_at: ISO datetime or null
+- completed_at: ISO datetime or null
+- failure_reason: string or null
+- active_atom_id: string or null
+- progress: object
+- total_atoms: int
+- done_atoms: int
+- percent: number 0 to 100
+Edge cases
+- If active_atom_id references missing atom, treat as corruption
+- If plan.atoms is empty while status running, you are running blind, force replan node
+7) approvals (required)
+Purpose: pause points and human decisions
+Fields
+- required: bool
+- pause_reason: string or null
+- queue: array of approval request objects
+Approval request object
+- approval_id: string
+- requested_at: ISO datetime
+- requested_by: "system" | "user" | "admin"
+- type: string (send_email, delete_file, schedule_interview, etc.)
+- summary: string (human readable)
+- risk_level: "low" | "medium" | "high"
+- payload: object (action details)
+- status: "pending" | "approved" | "rejected" | "expired"
+- decided_at: ISO datetime or null
+- decided_by: uuid string or null
+- decision_notes: string or null
+- last_decision: object or null (copy of last decision for quick UI)
+Rules
+States Layer (main)
+12- If approvals.required true then execution.status must be paused
+- A session can be paused without approvals if pause_reason is system_pause (rate_limit, dependency_down)
+Edge cases
+- Expired approvals: if pending too long, status can become paused still but action must be blocked
+- If approval approved but tool already executed (duplicate), do not execute again, check tools.receipts first
+8) tools (required)
+Purpose: track tool calls safely and prevent duplicates
+Fields
+- last_tool_call: object or null
+- tool_call_id: string
+- tool_name: string
+- node: string
+- called_at: ISO datetime
+- idempotency_key: string
+- receipts: array (bounded but must keep critical ones)
+Receipt object shape
+- tool_call_id: string
+- tool_name: string
+- idempotency_key: string
+- external_ids: object (gmail_message_id, calendar_event_id, drive_file_id, etc.)
+- request_fingerprint: string (hash of normalized request)
+- result_fingerprint: string (hash of normalized result)
+- status: "called" | "succeeded" | "failed"
+- error: string or null
+- created_at: ISO datetime
+- retry_policy: object
+- max_retries: int
+- backoff_seconds: int
+- retryable_errors: string array
+Rules
+- Before executing any tool action, check receipts for matching request_fingerprint
+If exists with succeeded, skip execution and reuse existing external_ids
+Edge cases
+- Tool called succeeded but response lost due crash
+On resume, you may need reconciliation: query tool by external id or retry safely
+- Tool partial success: external id exists but downstream step failed, keep receipt and continue
+9) errors (required)
+Purpose: capture failure context and recovery
+Fields
+- last_error: object or null
+- error_id: string
+- node: string
+- message: string
+- stack: string or null
+- occurred_at: ISO datetime
+- severity: "low" | "medium" | "high"
+- error_count: int
+- recovery: object
+- last_recovery_action: string or null
+- recovery_attempts: int
+- last_recovery_at: ISO datetime or null
+Rules
+- If status failed, last_error must exist
+- attempt increments on every resume after failed
+Edge cases
+- Repeated failure loop: if recovery_attempts > threshold, force human escalation approval
+10) ui (required)
+Purpose: minimal UI display state, not business logic
+Fields
+- status_message: string
+- progress_percent: number 0 to 100
+- highlights: string array (last 3 to 7 key updates)
+- last_updated_human: ISO datetime
+Rule
+- UI must be derived from plan and execution, never the other way round
+============================================================
+1.3 MINIMUM VALID EXAMPLE (THIS IS WHAT DEV WRITES ON START_SESSION)
+============================================================
+States Layer (main)
+13Example state_data skeleton (schema_version 1)
+{
+"schema_version": 1,
+"meta": {
+"org_id": "ORG_UUID",
+"user_id": "USER_UUID",
+"session_id": "SESSION_UUID",
+"created_at": "2026-01-10T00:00:00Z",
+"last_checkpoint_at": "2026-01-10T00:00:00Z",
+"environment": "prod",
+"tags": []
+},
+"execution": {
+"status": "running",
+"current_node": "intent_classification",
+"last_node": null,
+"run_id": "run_0001",
+"attempt": 1,
+"checkpoint_seq": 1,
+"next_nodes_candidate": [],
+"last_event_sequence": null
+},
+"context": {
+"user_intent": { "raw_input": "", "intent_label": "unknown", "confidence": 0 },
+"policy_refs": [],
+"resources_refs": [],
+"entities": { "company_names": [], "people": [], "dates": [], "misc": {} }
+},
+"memory": {
+"short_term_messages": [],
+"summaries": [],
+"long_term_refs": []
+},
+"plan": {
+"goal": "",
+"atoms": [],
+"active_atom_id": null,
+"progress": { "total_atoms": 0, "done_atoms": 0, "percent": 0 }
+},
+"approvals": {
+"required": false,
+"pause_reason": null,
+"queue": [],
+"last_decision": null
+},
+"tools": {
+"last_tool_call": null,
+"receipts": [],
+"retry_policy": { "max_retries": 3, "backoff_seconds": 5, "retryable_errors": [] }
+},
+"errors": {
+"last_error": null,
+"error_count": 0,
+"recovery": { "last_recovery_action": null, "recovery_attempts": 0, "last_recovery_at": null }
+},
+"ui": {
+"status_message": "Session started",
+"progress_percent": 0,
+"highlights": [],
+"last_updated_human": "2026-01-10T00:00:00Z"
+}
+}
+============================================================
+1.4 VALIDATION RULES (MUST ENFORCE IN BACKEND)
+============================================================
+Hard validation checks
+- schema_version exists and is int
+- execution.current_node exists and is string
+- execution.status in allowed set
+- approvals.required implies execution.status = paused
+- plan.progress.total_atoms equals len(plan.atoms)
+- tools.receipts entries must include idempotency_key and request_fingerprint
+- short_term_messages length <= 80
+Soft validation checks (warn, auto repair)
+States Layer (main)
+14- missing ui fields can be derived
+- missing plan can be set empty then force replan node
+- missing entities.misc can be {}
+Corruption handling policy
+If hard validation fails:
+- Mark workflow_states.status = failed
+- Write error event type "corruption"
+- Trigger recovery node: state_repair_agent
+- If repair fails, require human intervention
+============================================================
+1.5 EDGE CASE PLAYBOOK (WHAT THIS CONTRACT PREVENTS)
+============================================================
+Case A Crash after tool called before tool result
+- receipt shows status called
+- on resume, orchestrator checks receipts and either
+1) reconciles by fetching from tool using external id if available
+2) retries with same idempotency_key and request_fingerprint
+Case B Duplicate retry causes double execution
+- receipts unique by request_fingerprint and idempotency_key
+- tool execution wrapper must check receipts before calling tool
+Case C Approval required but orchestrator continues
+- approvals.required true forces execution.status paused
+- resume gate blocks LLM tool nodes until approval decision exists
+Case D Snapshot bloat
+- short_term_messages bounded
+- summaries used for older context
+- full fidelity stored in event log later
+Case E Plan drift after resume
+- plan atoms are explicit, active_atom_id points to exact atom
+- if mismatch, force replan and record recovery event
+============================================================
+1.6 DELIVERABLE OF STEP 1 (WHAT YOU SHOULD GIVE YOUR DEV)
+============================================================
+Deliver these 4 files to engineering
+1) states_contract.md
+Contains the full schema above and rules
+2) state_data_example.json
+The minimum valid example above
+3) state_validation.ts or py
+A validator function that runs on every checkpoint write
+4) tool_wrapper_idempotency.md
+Explains how to compute request_fingerprint, idempotency_key, and receipt behavior
+============================================================
+============================================================
+STEP 2
+STEP 2 — TABLE ARCHITECTURE (SNAPSHOT VS EVENT LOG) + DATABASE DESIGN
+Goal: Decide the exact database model for States Layer so it is resumable, auditable, queryable, and scalable.
+This step is where most founders screw up:
+They store everything in one JSON blob because it’s “easy”.
+Then it bloats, becomes slow, and they can’t debug or audit anything.
+So we will design it properly now.
+============================================================
+2.0 FIRST PRINCIPLES (WHAT MUST BE TRUE)
+============================================================
+For States Layer to work in real production, these must be true:
+A) Resume correctness
+States Layer (main)
+15We can restart a workflow after crash and continue from exact node without duplicating actions.
+B) Forensic audit
+We can answer:
+- What happened
+- When it happened
+- Who approved it
+- Which tool was called
+- What result came back
+Even months later.
+C) Fast queries
+UI cannot scan giant JSON to show “running sessions” or “approval queue”.
+Those must be indexed SQL queries.
+D) Bloat control
+The system will generate a lot of text and events.
+The database must remain performant with large volumes.
+E) Tenant isolation
+All state must be isolated by org_id through strict RLS.
+These truths imply one thing:
+You need a snapshot table + an append only event table.
+============================================================
+2.1 ARCHITECTURE OPTIONS (YOU CHOOSE ONE)
+============================================================
+Option A (MVP-only, not recommended long term)
+Single table only: workflow_states
+- Keep full history in state_data JSONB
+- Overwrite state_data every checkpoint
+Pros
+- Fastest to build
+Cons
+- JSON grows huge
+- Updates become slow
+- Hard to query history
+- Audit becomes unreliable
+- Debugging becomes painful
+Option B (Recommended)
+Two-table design
+1) workflow_states
+snapshot (latest truth)
+2) workflow_state_events append-only timeline (history)
+Pros
+- Small snapshot, fast updates
+- Full audit trail
+- Easy analytics
+- Deterministic replay
+Cons
+- Slightly more work now (worth it)
+Option C (Enterprise-grade)
+3 to 4 tables design
+1) workflow_states
+snapshot
+2) workflow_state_events history
+3) workflow_artifacts
+4) workflow_locks
+large payload storage reference
+concurrency control
+Pros
+- Best scalability and control
+Cons
+- More moving parts
+My call for you
+Pick Option B now.
+Add artifacts and locks later if needed.
+Do not overbuild but also do not sabotage future scale.
+============================================================
+2.2 FINAL RECOMMENDED DATABASE ENTITIES
+============================================================
+Entity 1: workflow_states (Snapshot)
+States Layer (main)
+16Purpose
+- Fast retrieval of current state for resume
+- Fast list views for dashboard
+- Fast “approval queue” view
+Cardinality
+- One row per session
+- Updated frequently
+Entity 2: workflow_state_events (Append-only History)
+Purpose
+- Immutable timeline of everything
+- Allows deterministic replay
+- Enables audit, analytics, and debugging
+Cardinality
+- Many rows per session
+- Insert-only
+Optional Entity 3: workflow_artifacts (Externalized large data)
+Purpose
+- Store huge texts, files, transcripts
+- Keep events payload small
+Examples
+- extracted_pdf_text
+- long email threads
+- attached docs
+Optional Entity 4: workflow_locks (Distributed execution safety)
+Purpose
+- prevent two workers executing same session
+============================================================
+2.3 TABLE RESPONSIBILITIES (STRICT BOUNDARIES)
+============================================================
+workflow_states should contain
+- org_id, user_id
+- status, current_node, last_node
+- state_data (small snapshot)
+- version, updated_at, last_event_at
+workflow_states must NOT contain
+- full event history
+- large tool results
+- multi-MB transcripts
+workflow_state_events should contain
+- event_type
+- node
+- sequence
+- idempotency_key
+- payload (small to medium)
+- created_at
+workflow_state_events must NOT contain
+- giant documents (put in artifacts and reference)
+============================================================
+2.4 EVENT MODEL (WHAT TYPES OF EVENTS EXIST)
+============================================================
+Event types must be explicit because they drive replay and audit.
+Core event types (recommended)
+- checkpointa snapshot checkpoint marker
+- node_enterednode transition entry
+- node_exited
+- user_messagenode transition exit
+user input stored
+- ai_messageassistant output stored
+- tool_calledtool invocation record
+- tool_resulttool output record
+- approval_requested
+- approval_decision
+- error
+- recovery
+approval gate created
+approved/rejected record
+error occurred
+recovery action taken
+Why this matters
+States Layer (main)
+17If you don’t standardize event_type, your event log becomes junk and replay breaks.
+============================================================
+2.5 DETERMINISTIC ORDERING (SEQUENCE VS TIMESTAMP)
+============================================================
+Never trust timestamps alone.
+Two events can share same millisecond.
+Network retries can reorder inserts.
+So every session must have a monotonic sequence:
+- sequence: bigint
+- unique(session_id, sequence)
+How to assign sequence safely
+- in a transaction:
+select max(sequence) + 1 where session_id = X
+insert event with that sequence
+- or maintain a per session counter in workflow_states
+Edge case
+Two workers append at same time:
+- unique constraint rejects one
+- retry logic re-reads max and tries again
+============================================================
+2.6 IDEMPOTENCY DESIGN (PREVENT DOUBLE TOOL EXECUTION)
+============================================================
+All tool actions must be protected.
+Event log must store:
+- idempotency_key (unique per session + action)
+- request_fingerprint (hash of normalized request)
+- external_ids (gmail message id, calendar event id, etc.)
+Unique rules
+- unique(session_id, idempotency_key)
+Optional
+- unique(session_id, request_fingerprint, tool_name) for stronger protection
+Tool wrapper logic
+Before tool call:
+- search receipts in snapshot or events for matching request_fingerprint
+If found succeeded:
+- skip tool call
+If found called but no result:
+- reconcile or retry with same idempotency_key
+Edge case
+Tool succeeded but response lost:
+- reconcile by fetching from tool using external id if available
+- else retry but ensure idempotency is supported by tool or your wrapper
+============================================================
+2.7 SNAPSHOT SIZE CONTROL (DO NOT LET STATE_DATA GROW)
+============================================================
+Snapshot rules
+- Keep last N messages only (30 to 80)
+- Summarize older messages into summaries
+- Store full transcript optionally in events or artifacts
+Hard thresholds
+- if state_data size > threshold (example 200 KB)
+trigger summarization and offload to artifacts
+Edge cases
+- without this, Postgres updates become slow and vacuum overhead grows
+- you get timeouts and then you lose checkpoints and then resume fails
+============================================================
+2.8 QUERY REQUIREMENTS (WHAT UI MUST BE ABLE TO DO)
+============================================================
+Your DB design must support these queries efficiently:
+Q1 Dashboard list
+States Layer (main)
+18List sessions by org, status in running paused
+Order by updated_at desc
+This uses workflow_states index
+Q2 Approval queue
+List sessions where status paused and current_node indicates approval
+This uses workflow_states index
+Q3 Resume
+Fetch snapshot by session_id
+Fetch events since last_event_sequence (or last_checkpoint)
+This uses workflow_states PK + workflow_state_events index
+Q4 Timeline view
+Fetch all events for a session ordered by sequence
+This uses workflow_state_events(session_id, sequence)
+Q5 Failure triage
+List failed sessions by org order by updated_at desc
+This uses workflow_states(org_id, status, updated_at)
+============================================================
+2.9 SECURITY AND MULTI TENANCY (ARCHITECTURE IMPACT)
+============================================================
+Every table must have org_id
+Do not rely only on joining through session_id
+Because RLS conditions become weaker and more complex.
+So:
+workflow_states.org_id not null
+workflow_state_events.org_id not null
+workflow_artifacts.org_id not null
+workflow_locks.org_id not null
+RLS becomes simple:
+Allow access only if user is member of org_id.
+Edge case
+If events do not contain org_id, you risk weird RLS bypass bugs and performance issues.
+============================================================
+2.10 ARCHITECTURE DECISIONS YOU MUST LOCK NOW
+============================================================
+Decision D1: Do you want full history in DB or cold storage later
+Recommended: keep events hot for 90 to 180 days, archive older
+Decision D2: Do you want client writes or backend only writes
+Recommended: backend only writes to states and events
+Client only reads
+Decision D3: Do you want artifacts table now
+If your workflows involve PDFs, long emails, transcripts
+You should include artifacts table from day 1
+If not, add later
+Decision D4: Do you want locks now
+If you will run multiple workers or background jobs, yes
+If single worker only, can delay
+============================================================
+2.11 DELIVERABLE OF STEP 2
+============================================================
+You should end Step 2 with:
+1) Locked architecture choice: Option B
+2) Final table list:
+- workflow_states
+- workflow_state_events
+optional later:
+- workflow_artifacts
+- workflow_locks
+3) Event type list finalized
+4) Sequence and idempotency rules finalized
+5) Snapshot size policy finalized
+============================================================
+States Layer (main)
+19============================================================
+STEP 4
+STEP 4 — ROW LEVEL SECURITY (RLS) + POLICIES FOR STATES LAYER (SUPABASE)
+Goal: Perfect tenant isolation and safe write paths for workflow_states and workflow_state_events.
+If this step is weak, your product is unsafe. Data leaks kill companies.
+This step assumes you already have:
+- org/workspace table (orgs or workspaces)
+- membership table (org_memberships or workspace_memberships)
+- Supabase auth users (auth.uid())
+If you do not have a membership table, create it first. RLS without membership is fake security.
+============================================================
+4.0 SECURITY MODEL (LOCK THIS BEFORE WRITING POLICIES)
+============================================================
+We enforce these security truths:
+Truth A: A user can only read data for orgs they belong to
+Truth B: A user can only write data for orgs they belong to
+Truth C: For states and events, client writes are risky
+Recommended: client can read, but ONLY backend service role can insert or update
+Why backend-only writes are recommended
+- Prevents malicious or buggy clients from corrupting states
+- Prevents users from forging approvals and tool receipts
+- Keeps idempotency and sequencing reliable
+So we implement:
+- SELECT allowed for org members
+- INSERT and UPDATE allowed ONLY for service role (or optionally org members if you insist)
+- DELETE almost always blocked (service role only)
+============================================================
+4.1 REQUIRED PREREQUISITE: MEMBERSHIP TABLE RULE
+============================================================
+You need a membership table with at least:
+- org_id uuid
+- user_id uuid
+- role text (admin, member, viewer)
+- status text (active)
+- created_at
+Example names you may already have:
+- workspace_memberships
+- org_memberships
+All policies will use a helper predicate:
+is_org_member(org_id) :=
+exists(
+select 1
+from org_memberships m
+where m.org_id = org_id
+and m.user_id = auth.uid()
+and m.status = 'active'
+)
+If your membership table is named differently, replace it in the SQL.
+============================================================
+4.2 RLS MUST BE ENABLED (NO EXCEPTIONS)
+============================================================
+Tables
+- workflow_states
+- workflow_state_events
+Optional
+- workflow_artifacts
+- workflow_locks
+States Layer (main)
+20Enable RLS on all of them.
+============================================================
+4.3 POLICY SET (RECOMMENDED) — CLIENT READS, BACKEND WRITES
+============================================================
+4.3.1 workflow_states policies
+Policy S1: SELECT (org members)
+- Allow org members to read snapshot state for UI
+Policy S2: INSERT (service role only)
+- Only backend creates sessions
+Policy S3: UPDATE (service role only)
+- Only backend checkpoints state
+Policy S4: DELETE (service role only or disabled)
+- Usually disabled to preserve audit history
+- If you need cleanup, do it from backend
+4.3.2 workflow_state_events policies
+Policy E1: SELECT (org members)
+- UI can show timeline or audit
+Policy E2: INSERT (service role only)
+- Only backend can append events
+Policy E3: UPDATE/DELETE (nobody)
+- Events are immutable. If you allow updates, your audit trail is fake.
+============================================================
+4.4 OPTIONAL POLICY VARIANT — ORG MEMBERS CAN WRITE (NOT RECOMMENDED)
+============================================================
+If you insist on allowing client write:
+- Insert allowed for org members
+- Update allowed for org members
+But you must then enforce:
+- server side validation
+- function based writes (RPC) with validation
+Because otherwise clients can forge approvals and receipts.
+In real systems, states are system-owned, not user-owned.
+============================================================
+4.5 PASTE READY SUPABASE SQL (EDIT MEMBERSHIP TABLE NAME IF NEEDED)
+============================================================
+ASSUMPTION
+- Membership table: org_memberships
+- Columns: org_id, user_id, status
+- workflow_states has org_id column
+- workflow_state_events has org_id column
+SQL
+1) Enable RLS
+alter table public.workflow_states enable row level security;
+alter table public.workflow_state_events enable row level security;
+2) Clean old policies if re-running
+drop policy if exists "states_select_org_members" on public.workflow_states;
+drop policy if exists "states_insert_service_role" on public.workflow_states;
+drop policy if exists "states_update_service_role" on public.workflow_states;
+drop policy if exists "states_delete_service_role" on public.workflow_states;
+drop policy if exists "events_select_org_members" on public.workflow_state_events;
+drop policy if exists "events_insert_service_role" on public.workflow_state_events;
+drop policy if exists "events_no_update" on public.workflow_state_events;
+drop policy if exists "events_no_delete" on public.workflow_state_events;
+3) workflow_states SELECT policy
+create policy "states_select_org_members"
+on public.workflow_states
+for select
+States Layer (main)
+21using (
+exists (
+select 1
+from public.org_memberships m
+where m.org_id = workflow_states.org_id
+and m.user_id = auth.uid()
+and m.status = 'active'
+)
+);
+4) workflow_states INSERT policy (service role only)
+create policy "states_insert_service_role"
+on public.workflow_states
+for insert
+with check (
+auth.role() = 'service_role'
+);
+5) workflow_states UPDATE policy (service role only)
+create policy "states_update_service_role"
+on public.workflow_states
+for update
+using (
+auth.role() = 'service_role'
+)
+with check (
+auth.role() = 'service_role'
+);
+6) workflow_states DELETE policy (service role only)
+create policy "states_delete_service_role"
+on public.workflow_states
+for delete
+using (
+auth.role() = 'service_role'
+);
+7) workflow_state_events SELECT policy
+create policy "events_select_org_members"
+on public.workflow_state_events
+for select
+using (
+exists (
+select 1
+from public.org_memberships m
+where m.org_id = workflow_state_events.org_id
+and m.user_id = auth.uid()
+and m.status = 'active'
+)
+);
+8) workflow_state_events INSERT policy (service role only)
+create policy "events_insert_service_role"
+on public.workflow_state_events
+for insert
+with check (
+auth.role() = 'service_role'
+);
+9) Block UPDATE entirely (optional explicit deny)
+create policy "events_no_update"
+on public.workflow_state_events
+for update
+using (false);
+10) Block DELETE entirely (optional explicit deny)
+create policy "events_no_delete"
+on public.workflow_state_events
+for delete
+using (false);
+============================================================
+4.6 IMPORTANT EDGE CASES + HOW TO HANDLE THEM
+============================================================
+Edge Case A: Events table missing org_id
+Problem
+- RLS must join via workflow_states which is slower and riskier
+States Layer (main)
+22Fix
+- Add org_id to events always. Non negotiable.
+Edge Case B: Membership table name mismatch
+Fix
+- Replace public.org_memberships with your table name
+- Ensure columns match
+Edge Case C: Membership status not stored
+Fix
+- Remove status filter or add status column
+- But you should have status for revocations
+Edge Case D: Admin override requirements
+Sometimes org admins should see all sessions even if user_id different
+Our policy already allows any org member to read all org sessions.
+If you want stricter:
+- allow only role in ('admin','owner') for select
+Edge Case E: Client needs to create sessions (not recommended)
+Use Supabase RPC:
+- create a SECURITY DEFINER function that validates and inserts
+- then policy allows calling RPC instead of raw insert
+Edge Case F: Users removed from org
+They must lose access instantly.
+RLS does this automatically if membership removed.
+Edge Case G: Service role bypass
+Service role bypasses RLS by design.
+So protect service role keys.
+Never expose service key to client.
+============================================================
+4.7 VALIDATION TESTS (YOU MUST RUN THESE)
+============================================================
+Test T1: Positive read
+- user is org member
+- select workflow_states where org_id = their org
+Expected: returns rows
+Test T2: Negative read
+- user not org member
+- select workflow_states for org_id they do not belong
+Expected: zero rows
+Test T3: Client write blocked
+- logged in client tries insert into workflow_states
+Expected: permission denied
+Test T4: Backend write allowed
+- backend using service role inserts and updates
+Expected: success
+Test T5: Events immutability
+- try update workflow_state_events row
+Expected: denied always
+============================================================
+4.8 DELIVERABLE OF STEP 4
+============================================================
+1) RLS enabled on all state tables
+2) Policies created and documented
+3) Verified by 2 real user accounts and one backend service role test
+4) A short security README explaining:
+- client reads only
+- backend writes only
+- why events are immutable
+============================================================
+============================================================
+STEP 5
+States Layer (main)
+23STEP 5 — INDEXING + PERFORMANCE (USING workspace_memberships)
+Goal: Make every States Layer query fast at scale with correct indexes and query patterns.
+Assumption: Your membership table is public.workspace_memberships (workspace_id, user_id, status, role, created_at)
+Assumption: workflow tables use workspace_id (not org_id). If your tables still use org_id, rename it now.
+Rule: Every query must filter by workspace_id first.
+============================================================
+5.0 NON NEGOTIABLE QUERY RULES
+============================================================
+Rule A: Always filter by workspace_id first
+Reason: Multi-tenant isolation and index selectivity.
+Rule B: Never query JSONB for list views
+List views must use SQL columns (status, current_node, updated_at).
+JSONB is for payload, not for filtering dashboards.
+Rule C: Always order by updated_at desc for dashboards
+So you need a composite index supporting it.
+Rule D: Event ordering must use sequence, not created_at
+Timestamps can collide or reorder under retries.
+============================================================
+5.1 TOP QUERIES YOU MUST SUPPORT (REAL UI + ORCHESTRATOR)
+============================================================
+Q1 Dashboard: list active sessions
+Input: workspace_id
+Filter: status in (running, paused)
+Sort: updated_at desc
+Limit: 20 to 100
+Q2 Approval queue
+Input: workspace_id
+Filter: status = paused AND current_node = 'human_approval' (or similar)
+Sort: updated_at desc
+Q3 Resume: fetch one session snapshot
+Input: workspace_id + session_id
+Q4 Timeline: fetch events for a session
+Input: session_id
+Sort: sequence asc
+Q5 “Recent failures”
+Input: workspace_id
+Filter: status = failed
+Sort: updated_at desc
+Q6 “My sessions”
+Input: workspace_id + user_id
+Filter: user_id
+Sort: updated_at desc
+============================================================
+5.2 REQUIRED INDEXES (WORKFLOW STATES SNAPSHOT TABLE)
+============================================================
+Table: public.workflow_states
+Expected columns:
+- session_id uuid (pk)
+- workspace_id uuid
+- user_id uuid
+- status text or enum
+- current_node text
+- priority text or enum
+- updated_at timestamptz
+- last_event_at timestamptz
+Indexes to create:
+I1) Dashboard list index
+create index if not exists idx_ws_states_workspace_status_updated
+on public.workflow_states (workspace_id, status, updated_at desc);
+Supports:
+States Layer (main)
+24- Q1 (active sessions)
+- Q5 (failed sessions)
+- general status dashboards
+I2) Approval queue index
+create index if not exists idx_ws_states_workspace_node_status_updated
+on public.workflow_states (workspace_id, current_node, status, updated_at desc);
+Supports:
+- Q2 approval queue
+Why include status too:
+- ensures 'paused' filter stays selective
+I3) Resume lookup by workspace + session
+If session_id is globally unique PK, you can still benefit from workspace filter for security checks.
+create index if not exists idx_ws_states_workspace_session
+on public.workflow_states (workspace_id, session_id);
+Supports:
+- Q3 (fast secure fetch)
+I4) User specific sessions
+create index if not exists idx_ws_states_workspace_user_updated
+on public.workflow_states (workspace_id, user_id, updated_at desc);
+Supports:
+- Q6 (my sessions)
+Optional I5) Updated_at only (rarely needed)
+Only add if you do a lot of time range queries across statuses:
+create index if not exists idx_ws_states_workspace_updated
+on public.workflow_states (workspace_id, updated_at desc);
+Do not add too many indexes early.
+Every extra index slows writes (checkpointing).
+============================================================
+5.3 REQUIRED INDEXES (WORKFLOW STATE EVENTS TABLE)
+============================================================
+Table: public.workflow_state_events
+Expected columns:
+- event_id uuid (pk)
+- session_id uuid
+- workspace_id uuid
+- event_type text
+- node text
+- sequence bigint
+- idempotency_key text
+- created_at timestamptz
+Indexes to create:
+E1) Timeline replay index (critical)
+create index if not exists idx_ws_events_session_sequence
+on public.workflow_state_events (session_id, sequence asc);
+Supports:
+- Q4 timeline
+- replay and hydrate
+E2) Workspace recent events (for admin/audit screens)
+create index if not exists idx_ws_events_workspace_created
+on public.workflow_state_events (workspace_id, created_at desc);
+Supports:
+- “recent activity” dashboards per workspace
+E3) Idempotency enforcement (should be unique constraint, not just index)
+You should already have:
+unique(session_id, idempotency_key)
+If you don’t, add it in Step 3.
+It is not optional.
+Optional E4) Filter by event_type quickly
+Only if you frequently query by event_type
+create index if not exists idx_ws_events_workspace_type_created
+on public.workflow_state_events (workspace_id, event_type, created_at desc);
+States Layer (main)
+25Be careful: events are high write volume. Don’t over index.
+============================================================
+5.4 JSONB INDEXING (WHEN AND HOW)
+============================================================
+General rule: avoid GIN on whole state_data until you know you need it.
+When to add JSONB index
+Only if you have a hard product requirement like:
+- search sessions where approvals.required is true
+But even that should be in SQL columns, not JSON.
+Correct approach
+Promote frequently queried JSON fields to real SQL columns.
+Examples:
+- approvals_required boolean (derived)
+- last_error_severity text
+- active_atom_id text
+If you still must query JSONB
+Create a targeted expression index, not full GIN.
+Example (only if absolutely needed):
+create index if not exists idx_ws_states_approvals_required
+on public.workflow_states (
+workspace_id,
+((state_data->'approvals'->>'required')::boolean)
+);
+But again: better to have approvals_required as a real column.
+============================================================
+5.5 PERFORMANCE STRATEGY FOR CHECKPOINTING (WRITE PATH)
+============================================================
+Checkpoint writes are frequent.
+Indexes slow writes.
+Write optimization rules:
+- Keep workflow_states row small (snapshot is bounded)
+- Avoid updating gigantic JSON
+- Use jsonb set operations to patch minimal keys rather than rewriting entire blob
+- Insert events append-only (fast)
+Edge case: updated_at hotspot
+If you update updated_at on every micro event, you will create write pressure.
+Solution:
+- checkpoint snapshot only at meaningful boundaries (tool_result, node_exit, approval_decision)
+- events can still be written for each small action
+============================================================
+5.6 QUERY PATTERNS (HOW YOU SHOULD ACTUALLY QUERY IN CODE)
+============================================================
+Pattern P1: dashboard list (fast)
+select session_id, status, current_node, updated_at, title
+from workflow_states
+where workspace_id = :ws
+and status in ('running','paused')
+order by updated_at desc
+limit 50;
+Pattern P2: approval queue (fast)
+select session_id, title, updated_at
+from workflow_states
+where workspace_id = :ws
+and status = 'paused'
+and current_node = 'human_approval'
+order by updated_at desc
+limit 50;
+Pattern P3: resume (safe)
+select *
+from workflow_states
+where workspace_id = :ws
+and session_id = :session_id
+States Layer (main)
+26limit 1;
+Pattern P4: events since last applied sequence
+select *
+from workflow_state_events
+where session_id = :session_id
+and sequence > :last_event_sequence
+order by sequence asc
+limit 2000;
+============================================================
+5.7 EDGE CASES + HOW INDEXES PREVENT FAILURE
+============================================================
+Edge Case A: 10k sessions in one workspace
+Without idx_ws_states_workspace_status_updated
+- dashboard list becomes slow (full scan)
+With index
+- fast range scan, ordered output
+Edge Case B: approval queue becomes unusable
+Without idx_ws_states_workspace_node_status_updated
+- filtering by node + status becomes slow
+With index
+- fast
+Edge Case C: replay takes too long
+Without idx_ws_events_session_sequence
+- you sort huge event sets repeatedly
+With index
+- already ordered retrieval
+Edge Case D: duplicate tool runs
+Without unique(session_id, idempotency_key)
+- retries insert duplicates
+With unique constraint
+- duplicate insert rejected
+============================================================
+5.8 PASTE READY SUPABASE SQL (INDEX CREATION)
+============================================================
+-- workflow_states indexes
+create index if not exists idx_ws_states_workspace_status_updated
+on public.workflow_states (workspace_id, status, updated_at desc);
+create index if not exists idx_ws_states_workspace_node_status_updated
+on public.workflow_states (workspace_id, current_node, status, updated_at desc);
+create index if not exists idx_ws_states_workspace_session
+on public.workflow_states (workspace_id, session_id);
+create index if not exists idx_ws_states_workspace_user_updated
+on public.workflow_states (workspace_id, user_id, updated_at desc);
+-- workflow_state_events indexes
+create index if not exists idx_ws_events_session_sequence
+on public.workflow_state_events (session_id, sequence asc);
+create index if not exists idx_ws_events_workspace_created
+on public.workflow_state_events (workspace_id, created_at desc);
+-- optional only if needed later
+-- create index if not exists idx_ws_events_workspace_type_created
+-- on public.workflow_state_events (workspace_id, event_type, created_at desc);
+============================================================
+5.9 VALIDATION CHECKLIST (YOU MUST DO THIS AFTER CREATING INDEXES)
+============================================================
+V1) Run EXPLAIN on dashboard list query
+- it should use idx_ws_states_workspace_status_updated
+- should not show Seq Scan on workflow_states
+V2) Run EXPLAIN on approval queue query
+- it should use idx_ws_states_workspace_node_status_updated
+V3) Run EXPLAIN on events replay query
+States Layer (main)
+27- it should use idx_ws_events_session_sequence
+V4) Measure baseline with 10k sessions and 200k events (even dummy inserts)
+- dashboard list should stay snappy
+============================================================
+============================================================
+STEP 6
+STEP 6 — CHECKPOINTING + WRITE PATH (APIs, TRANSACTIONS, IDEMPOTENCY, EDGE CASES)
+Goal: Define exactly WHEN and HOW Mr Elite writes to States Layer so workflows resume safely
+and never execute tools twice.
+If Step 1 is the “contract”, Step 6 is the “operational discipline”.
+Most systems fail here because they checkpoint randomly or too late.
+Assumption
+- Tables exist: workflow_states (snapshot) and workflow_state_events (append-only)
+- RLS is set: client reads, backend service role writes
+- workflow_state_events has: session_id, workspace_id, sequence, idempotency_key, event_type, payload
+============================================================
+6.0 FIRST PRINCIPLES (THE WRITE PATH MUST GUARANTEE)
+============================================================
+Guarantee A: Every irreversible tool action is recorded BEFORE it happens
+So if you crash after calling a tool, you still know you called it.
+Guarantee B: Every tool result is recorded AFTER it happens
+So if you crash after the tool returns, you still retain the output.
+Guarantee C: Resume never duplicates side effects
+Email, calendar, payments, deletions must not run twice.
+Guarantee D: Ordering is deterministic
+Sequence numbers define order. Not timestamps.
+Guarantee E: Writes are retry-safe
+Network retries, worker restarts, and timeouts must not corrupt state.
+This implies a very specific pattern:
+Two-phase tool execution + checkpoint boundaries.
+============================================================
+6.1 CHECKPOINT BOUNDARIES (WHEN TO WRITE SNAPSHOT)
+============================================================
+You must decide exactly where snapshot updates happen.
+If you checkpoint too often you waste DB writes.
+If you checkpoint too rarely you lose continuity after crash.
+Recommended checkpoint boundaries (snapshot updates)
+C1 Node entered
+- update workflow_states.current_node
+- add node_entered event
+- snapshot updated with execution pointers
+C2 Before tool call (event only, minimal snapshot optional)
+- add tool_called event with idempotency_key + request_fingerprint
+- optionally update snapshot.tools.last_tool_call
+C3 After tool result (event + snapshot)
+- add tool_result event with external_ids + result_fingerprint
+- update snapshot.tools.receipts + plan/progress changes
+C4 Approval requested (event + snapshot + status pause)
+- add approval_requested event
+- update workflow_states.status = paused
+- snapshot approvals.required = true
+C5 Approval decision (event + snapshot + resume running)
+- add approval_decision event
+- update status running and set next node
+States Layer (main)
+28C6 Node exited (event + snapshot)
+- add node_exited event
+- snapshot updated
+C7 Error (event + snapshot + failed or paused)
+- add error event
+- snapshot.errors updated
+- status failed OR paused (if recoverable)
+Practical rule
+Always checkpoint after anything that changes the “truth” of what to do next.
+============================================================
+6.2 EVENT WRITE STRATEGY (WHAT EVENTS MUST BE WRITTEN)
+============================================================
+For every session, your event stream must include at least:
+- node_entered
+- tool_called (if any tool is used)
+- tool_result (if tool succeeded)
+- approval_requested / approval_decision (if needed)
+- error / recovery (if needed)
+- checkpoint markers (optional but useful)
+Event payload must always include:
+- session_id, workspace_id
+- node
+- idempotency_key (for critical events)
+- minimal metadata for replay and audit
+Do NOT store huge raw tool results in events if they’re massive
+If big, store in artifacts and reference the artifact_id
+============================================================
+6.3 TWO-PHASE TOOL EXECUTION PATTERN (PREVENT DOUBLE RUNS)
+============================================================
+This is the core safety design.
+Phase 1: “Intent to act” (tool_called)
+- write tool_called event with:
+tool_name
+node
+idempotency_key
+request_fingerprint
+normalized_request
+created_at
+Phase 2: Execute tool
+- call the external API (gmail, calendar, drive)
+Phase 3: “Receipt of act” (tool_result)
+- write tool_result event with:
+tool_call_id
+idempotency_key
+external_ids
+result_fingerprint
+normalized_result_summary
+status
+Phase 4: Snapshot update
+- store receipt in snapshot.tools.receipts
+- update plan/progress and execution pointers
+WHY THIS WORKS
+If crash happens after Phase 1 but before Phase 3:
+- resume sees tool_called without tool_result
+- it can safely retry or reconcile without re-planning randomly
+============================================================
+6.4 IDEMPOTENCY KEYS + REQUEST FINGERPRINTS (EXACT RULES)
+============================================================
+You need two different identifiers:
+A) idempotency_key (unique per “attempted side effect”)
+Definition
+- stable across retries
+States Layer (main)
+29- changes only if user intent truly changes
+Recommended formula
+idempotency_key = sha256(
+session_id + "|" +
+node + "|" +
+tool_name + "|" +
+canonical_action_type + "|" +
+canonical_target_identifier
+)
+Examples canonical_target_identifier
+- send_email: to + subject_hash + body_hash
+- create_calendar_event: start_time + attendees_hash + title_hash
+- upload_drive: filename_hash + folder_id
+B) request_fingerprint (hash of normalized request payload)
+Definition
+- identifies same request even across small formatting differences
+- used to detect duplicates across retries
+Recommended
+- normalize JSON keys ordering
+- remove volatile fields (timestamps generated client side)
+- hash the normalized JSON string
+Minimum constraints in DB
+- unique(session_id, idempotency_key) in workflow_state_events
+Snapshot receipts storage
+- store request_fingerprint + idempotency_key + external_ids
+So you can short circuit tool calls fast.
+============================================================
+6.5 CONCURRENCY CONTROL (DON’T LET TWO WORKERS RUN SAME SESSION)
+============================================================
+If you ever have:
+- multiple workers
+- queue processing
+- background retry jobs
+You MUST prevent parallel execution.
+Minimal approach (good enough to start)
+- acquire advisory lock in Postgres per session_id at start of run
+- release on finish
+Supabase friendly approach
+- workflow_locks table with lease (Step 8)
+Until Step 8 exists:
+- run only one worker OR implement advisory locks in your backend DB connection
+Edge case
+Without locks, two workers can both execute “send_email”.
+Idempotency helps but some tools are not perfectly idempotent.
+So locks are still necessary.
+============================================================
+6.6 API ENDPOINTS (WHAT YOUR BACKEND MUST EXPOSE)
+============================================================
+These are the minimum atomic operations.
+API 1: start_session
+Input
+- workspace_id
+- user_id
+- title
+- initial_node
+- initial_state_data (must satisfy Step 1 schema)
+Actions (transaction)
+1 insert into workflow_states (status running, current_node initial_node, state_data initial)
+2 insert node_entered event with sequence = 1
+3 update workflow_states.last_event_at
+Output
+- session_id
+States Layer (main)
+30API 2: append_event
+Input
+- session_id
+- workspace_id
+- event_type
+- node
+- idempotency_key (optional for non-critical events)
+- payload
+Actions (transaction)
+1 compute next sequence (max(sequence)+1 for session)
+2 insert event (respect unique idempotency constraints)
+3 update workflow_states.last_event_at = now()
+Output
+- event_id, sequence
+API 3: checkpoint_snapshot
+Input
+- session_id
+- workspace_id
+- current_node
+- status
+- patch (json merge patch) OR full_state_data
+- expected_version (optimistic concurrency)
+Actions (transaction)
+1 update workflow_states
+set current_node, status, state_data = patched_json,
+version = version + 1,
+updated_at = now()
+where session_id = X and workspace_id = Y and version = expected_version
+2 if no rows updated -> conflict, reload and retry safely
+Output
+- new_version
+API 4: begin_tool_action (wrapper)
+Input
+- session_id, workspace_id, node, tool_name, canonical_action_type, normalized_request
+Actions
+1 compute idempotency_key + request_fingerprint
+2 check snapshot receipts for request_fingerprint succeeded
+if found -> return “skip” with external_ids
+3 insert tool_called event (append_event)
+4 optionally update snapshot.tools.last_tool_call
+Output
+- proceed true/false, idempotency_key, tool_call_event_sequence
+API 5: finish_tool_action (wrapper)
+Input
+- idempotency_key, external_ids, normalized_result_summary
+Actions
+1 insert tool_result event
+2 update snapshot.tools.receipts with succeeded receipt
+3 update plan/progress pointers
+Output
+- ok
+API 6: request_approval
+Input
+- approval_payload (type, summary, risk_level, payload)
+Actions
+1 insert approval_requested event
+2 checkpoint snapshot approvals.required=true, queue add item
+3 set workflow_states.status='paused', current_node='human_approval'
+API 7: decide_approval
+Input
+- approval_id, decision approve/reject, notes
+Actions
+1 insert approval_decision event
+2 checkpoint snapshot approvals.queue update decision
+3 set status running and route to next node
+States Layer (main)
+31API 8: load_for_resume
+Input
+- session_id, workspace_id
+Actions
+1 fetch workflow_states row
+2 fetch events since last_event_sequence (or last N events if you want)
+3 return snapshot + events
+============================================================
+6.7 TRANSACTION DESIGN (HOW TO DO THIS WITHOUT CORRUPTION)
+============================================================
+Critical writes must be transactional.
+Transaction T1 (append_event)
+- compute next sequence and insert must happen in one transaction
+Otherwise two inserts can get same sequence.
+Transaction T2 (tool wrappers)
+- tool_called insert must commit BEFORE calling external tool
+Because the tool call can succeed even if your server dies.
+Transaction T3 (checkpoint_snapshot)
+- use optimistic concurrency with version
+Prevents overwriting newer snapshots written by another worker.
+Edge case: insert succeeds but checkpoint fails
+- event log still has truth
+- snapshot will be repaired by replay or by a “snapshot reconciler” job
+============================================================
+6.8 RESUME LOGIC (HOW TO USE EVENTS + SNAPSHOT AFTER CRASH)
+============================================================
+On resume:
+1 Load workflow_states snapshot
+2 If status = paused
+- if approvals.required true -> wait for decision
+- else pause_reason system_pause -> retry later
+3 If status = failed
+- if recovery allowed -> run recovery node
+- else require human action
+4 Reconcile last tool state
+- if last event is tool_called without tool_result
+then do “tool reconciliation”:
+a) if tool supports idempotency, retry with same idempotency_key
+b) if external id known, fetch status from tool
+c) if uncertain, require human approval before retry
+5 Continue execution at current_node
+Key rule
+Never “guess”.
+If you’re uncertain whether an irreversible tool ran, pause and ask for approval.
+============================================================
+6.9 EDGE CASES (REAL PRODUCTION FAILURES AND HOW STEP 6 HANDLES THEM)
+============================================================
+Edge Case A: Worker dies after sending email but before saving result
+- tool_called exists
+- tool_result missing
+Recovery
+- reconcile by searching gmail for message-id or thread criteria
+- if found, write tool_result with external_id
+- continue
+If not sure, pause for approval and do not resend blindly
+Edge Case B: Network retry duplicates an event insert
+- unique(session_id, idempotency_key) rejects it
+- wrapper catches conflict and treats as already recorded
+Edge Case C: Snapshot update conflict
+- version mismatch means someone else wrote
+- reload snapshot and merge patch carefully
+- if merge too complex, rebuild snapshot from events
+Edge Case D: Tool returns partial success
+Example: calendar event created but attendee invites failed
+States Layer (main)
+32- record tool_result with status failed but external_id exists
+- plan sets atom as blocked with recovery suggestion
+Edge Case E: Approval decision arrives while worker still running
+- worker must re-check status before executing next tool step
+- if status paused, stop immediately
+Edge Case F: Event table grows huge
+- this is why Step 5 indexing and Step 9 retention exist
+- snapshot stays small; events can be archived later
+============================================================
+6.10 IMPLEMENTATION RULES (DOs and DONTs)
+============================================================
+DO
+- Write tool_called before external call
+- Store idempotency_key and request_fingerprint for every side effect
+- Use sequence for replay ordering
+- Use version for snapshot update concurrency
+- Pause when uncertain about side effects
+DONT
+- Call tools then write events (you’ll lose truth on crash)
+- Use timestamps as ordering
+- Let client write events directly
+- Store huge payloads directly in snapshot
+- Allow updates to events table
+============================================================
+6.11 DELIVERABLE OF STEP 6
+============================================================
+You should produce:
+1) checkpoint_policy.md
+- exact boundaries C1 to C7
+2) tool_wrapper_spec.md
+- idempotency_key rules
+- request_fingerprint rules
+- receipts structure
+3) API spec (routes or RPC)
+- start_session
+- append_event
+- checkpoint_snapshot
+- begin_tool_action
+- finish_tool_action
+- request_approval
+- decide_approval
+- load_for_resume
+4) A crash recovery demo script
+- run session -> kill server mid tool -> restart -> resume safely
+============================================================
+============================================================
+STEP 7
+STEP 7 — RETRIEVAL + HYDRATION (READ PATH + RESUME ENGINE)
+Goal: Define exactly how Mr Elite loads a session, reconstructs runtime state, and resumes deterministically.
+This step turns your DB into a real “resume after crash” system.
+Assumption
+- workflow_states: latest snapshot row (small)
+- workflow_state_events: append-only history (ordered by sequence)
+- Step 6 writes tool_called BEFORE tool execution and tool_result AFTER tool returns
+- Client reads, backend service role writes
+============================================================
+7.0 FIRST PRINCIPLES (THE READ PATH MUST GUARANTEE)
+============================================================
+Guarantee A: Deterministic resume
+States Layer (main)
+33Same snapshot + same events = same runtime reconstruction.
+No “guessing”.
+Guarantee B: Safety on side effects
+If there is ambiguity about whether an irreversible action happened, system pauses for approval.
+Guarantee C: Speed
+Resume must be fast even with big event history.
+So we load only what we need (delta since last_event_sequence or last_checkpoint).
+Guarantee D: Repairability
+If snapshot is corrupted or incomplete, we can rebuild from events (at least to a safe point).
+============================================================
+7.1 WHAT HYDRATION MEANS (CLEAR DEFINITION)
+============================================================
+Hydration = converting stored state (snapshot + events) into the in-memory runtime object
+that LangGraph / orchestrator uses to decide next node and execute.
+Stored
+- workflow_states.state_data (JSON snapshot)
+- workflow_states.current_node, status, version
+- workflow_state_events stream
+Runtime (in memory)
+- state_data (validated and possibly repaired)
+- tool receipts map (for idempotency checks)
+- approvals queue (for gating)
+- last processed sequence pointer
+- derived routing decisions (next node candidate)
+- execution lock token (if using locks)
+============================================================
+7.2 READ CONTRACT (WHAT “LOAD SESSION” MUST RETURN)
+============================================================
+Function: load_session_for_resume(workspace_id, session_id)
+Return payload
+A) snapshot
+- session_id
+- workspace_id
+- status
+- current_node
+- version
+- state_data
+- last_event_at
+B) events_delta
+- events where sequence > state_data.execution.last_event_sequence
+OR if last_event_sequence missing, load last N (like 200) for repair
+- ordered by sequence asc
+C) metadata
+- server_time
+- recommended_action: resume | wait_for_approval | recover | fail_hard
+Important
+Never return raw state_data to LLM directly.
+State_data must be validated and bounded before model access.
+============================================================
+7.3 HOW MUCH HISTORY TO LOAD (PERFORMANCE RULES)
+============================================================
+Rule A: Default delta load
+- Load only events since last_event_sequence
+- This makes resume O(delta) not O(total history)
+Rule B: If snapshot pointer is missing or suspicious
+- Load last 200 to 1000 events for repair
+- If still cannot repair, rebuild snapshot from scratch using all events (rare, expensive)
+Rule C: Cap events loaded per request
+- Avoid loading 1 million events in one resume call
+- Use pagination for UI timeline view
+States Layer (main)
+34============================================================
+7.4 VALIDATION + REPAIR PIPELINE (MUST RUN BEFORE RESUME)
+============================================================
+Pipeline stages
+Stage V1: Validate snapshot against Step 1 contract
+Hard failures
+- missing schema_version
+- missing execution.current_node
+- missing approvals object
+- invalid status
+Action
+- mark session as failed OR run repair routine
+Stage V2: Validate pointer consistency
+- workflow_states.current_node == state_data.execution.current_node
+- workflow_states.status == state_data.execution.status
+If mismatch
+- trust workflow_states columns (they are the canonical indexed truth)
+- patch state_data.execution accordingly and checkpoint
+Stage V3: Apply delta events to snapshot (replay)
+- replay events in order to bring snapshot to latest
+- update last_event_sequence pointer
+Stage V4: Run safety checks
+- detect tool_called without tool_result
+- detect approvals.required but status not paused
+- detect impossible plan state (active atom missing)
+If issues
+- route to recovery node OR pause for approval
+Deliverable of hydration
+A clean runtime_state object + a decision about what to do next.
+============================================================
+7.5 DELTA REPLAY (HOW TO APPLY EVENTS TO SNAPSHOT)
+============================================================
+You need a replay reducer function:
+apply_event(snapshot_state_data, event) -> new_state_data
+Rules
+- Replay must be pure and deterministic (no random choices)
+- It must not call external tools
+- It only updates state_data fields and receipts/approvals/errors
+Event type effects (examples)
+node_entered
+- execution.last_node = execution.current_node
+- execution.current_node = event.node
+- ui.status_message = "Entered node X"
+tool_called
+- tools.last_tool_call = { tool_call_id, tool_name, idempotency_key }
+- append receipt status = called (or mark pending)
+- record request_fingerprint
+tool_result
+- find receipt by idempotency_key and mark succeeded or failed
+- store external_ids
+- update plan/progress if payload indicates completion
+approval_requested
+- approvals.required = true
+- approvals.queue add item pending
+- execution.status = paused
+- execution.current_node = "human_approval" (or dedicated node)
+approval_decision
+- update approvals.queue item status approved/rejected
+- approvals.required = false if queue empty
+- execution.status = running
+- routing.next_nodes_candidate = [payload.next_node]
+error
+States Layer (main)
+35- errors.last_error = payload
+- errors.error_count += 1
+- execution.status = failed (or paused if recoverable)
+checkpoint
+- can be no-op or used to mark stable boundaries
+After replay, set:
+execution.last_event_sequence = event.sequence (for each event applied)
+============================================================
+7.6 RESUME DECISION ENGINE (WHAT TO DO AFTER HYDRATION)
+============================================================
+After hydration, decide one of these actions:
+Action A: WAIT_FOR_APPROVAL
+Condition
+- execution.status == paused
+- approvals.required == true
+Response
+- return to UI: approval queue + summary
+- do not run any nodes
+Action B: RECOVER
+Condition
+- execution.status == failed but error is recoverable
+- or snapshot corruption fixed but needs replan
+Response
+- route to recovery node (state_repair or replanner)
+- record recovery event
+Action C: RESUME_NORMAL
+Condition
+- status running
+- no unresolved approval
+- no unresolved tool ambiguity
+Response
+- continue from execution.current_node
+Action D: PAUSE_FOR_SAFETY
+Condition
+- tool_called exists without tool_result AND cannot reconcile safely
+Response
+- request approval before retrying tool
+- set paused and add approval_requested event
+Action E: FAIL_HARD
+Condition
+- contract validation fails and repair fails
+Response
+- mark failed + require human intervention
+============================================================
+7.7 TOOL AMBIGUITY RESOLUTION (MOST IMPORTANT EDGE CASE)
+============================================================
+Problem
+Crash may happen after tool execution but before tool_result is saved.
+Detection
+- last tool_called exists
+- no matching tool_result receipt
+Resolution policy (strict)
+1) If tool supports idempotency by key, retry with same idempotency_key
+2) If tool provides external id in called phase (rare), fetch status
+3) If you can query tool reliably (gmail search, calendar search), reconcile
+4) If uncertainty remains, PAUSE_FOR_SAFETY (require approval)
+Examples
+Email send
+- reconcile by searching Gmail for message matching request_fingerprint criteria
+- if found, write tool_result receipt and continue
+- if not found, you can resend but only after human approval if risk high
+Calendar create
+- search calendar for matching start_time + title hash + attendees
+States Layer (main)
+36- if found, record external event_id
+- else retry (calendar APIs are often idempotent if you provide client_request_id)
+File upload
+- check drive folder for filename hash and size
+- if found, record file_id
+This is why receipts must include request_fingerprint and canonical target identifiers.
+============================================================
+7.8 READ API SURFACE (FUNCTIONS YOU MUST IMPLEMENT)
+============================================================
+F1 load_snapshot(workspace_id, session_id)
+- returns workflow_states row
+F2 load_events_delta(session_id, after_sequence, limit)
+- returns events ordered by sequence asc
+F3 hydrate_runtime(snapshot, events_delta)
+- validate snapshot
+- replay delta
+- detect safety issues
+- return runtime_state + action decision
+F4 load_for_ui_list(workspace_id, filters)
+- uses indexed columns only (status, node, updated_at)
+- never touches event log
+F5 load_timeline(session_id, page_cursor)
+- paginated events for audit UI
+F6 rebuild_snapshot_from_events(session_id)
+- rare emergency tool
+- replays all events to reconstruct snapshot
+- writes checkpoint event and updates workflow_states.state_data
+============================================================
+7.9 REQUIRED STORED POINTERS (TO MAKE DELTA LOADING POSSIBLE)
+============================================================
+Where to store last processed sequence
+- state_data.execution.last_event_sequence (preferred)
+- or workflow_states.last_event_seq (SQL column)
+You can do both. SQL column is faster for queries and easier for debugging.
+Recommended
+Add workflow_states.last_event_seq bigint default 0
+Then delta query is:
+events where sequence > last_event_seq
+If you cannot add column now:
+Use state_data.execution.last_event_sequence, but it requires JSON read every time.
+============================================================
+7.10 EDGE CASES + FAILURE MODES (REAL WORLD)
+============================================================
+Edge Case A: Snapshot current_node mismatch
+Fix
+- trust workflow_states.current_node
+- patch snapshot.execution.current_node
+- write checkpoint_snapshot
+Edge Case B: Missing delta pointer
+Fix
+- load last 200 events, infer latest, set pointer
+Edge Case C: Events missing due to write failure
+Fix
+- snapshot may still contain truth
+- but audit is incomplete
+- record an error event "event_gap_detected" and require repair
+Edge Case D: Replay bug changes state incorrectly
+Fix
+- event reducer must be unit tested
+- include schema_version and keep reducer versioned
+States Layer (main)
+37Edge Case E: Approval queue inconsistent
+Fix
+- if approvals.required true but queue empty -> set required false
+- if paused but approvals.required false -> set pause_reason system_pause or resume
+Edge Case F: Huge sessions
+Fix
+- keep snapshot bounded
+- archive events older than retention window
+- keep summaries in snapshot for context
+============================================================
+7.11 TESTS YOU MUST PASS BEFORE YOU TRUST RESUME
+============================================================
+T1 Crash after tool_called
+- tool_called saved
+- crash before tool execution completes
+- resume should retry safely
+T2 Crash after tool executed but before tool_result saved
+- resume should reconcile or pause for safety
+T3 Approval pause
+- session paused with pending approval
+- resume should not proceed until decision exists
+T4 Delta replay correctness
+- run 100 events then load delta of last 10
+- state must match full replay state exactly
+T5 Multi-tenant read
+- user from other workspace cannot read snapshot or events
+============================================================
+7.12 DELIVERABLE OF STEP 7
+============================================================
+You should hand devs:
+1) read_path_spec.md
+- load snapshot
+- load delta events
+- hydrate runtime
+- resume decision engine
+2) event_reducer.ts or py
+- apply_event function for each event_type
+3) reconciliation_playbook.md
+- tool ambiguity handling per tool type
+4) Unit tests:
+- reducer tests
+- resume decision tests
+- crash simulation tests
+============================================================
+============================================================
+STEP 8
+STEP 8 — CONCURRENCY + LOCKS (PREVENT PARALLEL EXECUTION)
+Goal: Ensure only ONE worker can execute a workflow session at a time.
+Without this, you will get double tool execution (duplicate emails, duplicate calendar events),
+race conditions in sequence assignment, and corrupt state transitions.
+This step is mandatory the moment you have:
+- multiple workers
+- retry jobs
+- cron tasks
+- webhooks that can trigger execution
+Even “accidentally” having two processes is enough to break you.
+============================================================
+States Layer (main)
+388.0 FIRST PRINCIPLES (WHAT MUST BE TRUE)
+============================================================
+Truth A: A session can have only one active executor at any moment.
+Truth B: Locks must be time-bounded (leases), not permanent.
+Truth C: Locks must survive process crashes.
+Truth D: Lock acquisition must be atomic.
+Truth E: If lock is lost, worker must STOP immediately.
+This implies a lease-based locking mechanism stored in Postgres.
+============================================================
+8.1 LOCKING OPTIONS (CHOOSE ONE)
+============================================================
+Option 1: Postgres advisory locks (simple, but backend-dependent)
+Pros
+- Very strong and fast
+Cons
+- Requires holding the same DB connection
+- Harder with serverless / stateless workers
+- Not visible for debugging in UI easily
+Option 2: Lease table (recommended for Supabase)
+Pros
+- Works with stateless workers
+- Visible and debuggable
+- Simple to reason about
+Cons
+- Must implement renewal and expiry logic
+My call for you
+Use the Lease Table.
+It matches Supabase patterns and is easy to operate.
+============================================================
+8.2 LOCK TABLE SCHEMA (workflow_state_locks)
+============================================================
+Table: public.workflow_state_locks
+Columns
+- session_id uuid primary key
+- workspace_id uuid not null
+- locked_by text not null(worker_id or server instance id)
+- lock_token uuid not null(unique per acquisition)
+- locked_at timestamptz not null default now()
+- locked_until timestamptz not null
+(lease expiry time)
+- heartbeat_at timestamptz not null default now()
+- attempt int not null default 1
+(increments on re-acquire after expiry)
+- metadata jsonb not null default '{}' (optional debug: last_node, reason, etc.)
+Indexes
+- index(workspace_id, locked_until)
+- index(locked_by, locked_until)
+RLS
+- client should not write to locks
+- backend service role only (recommended)
+============================================================
+8.3 LEASE PARAMETERS (DEFAULTS THAT WORK)
+============================================================
+Recommended defaults
+- LEASE_SECONDS = 30
+- RENEW_EVERY_SECONDS = 10
+- MAX_STALE_HEARTBEAT_SECONDS = 45
+Why
+- 30s lease gives enough time for network hiccups
+- renew every 10s keeps it alive reliably
+- if worker dies, lock expires in <=30s and another worker can resume
+If you do long tool calls (like big file processing)
+- keep renewing while waiting
+- or use longer lease (60s) but renew anyway
+States Layer (main)
+39============================================================
+8.4 ACQUIRE LOCK (ATOMIC UPSERT PATTERN)
+============================================================
+Function: acquire_lock(session_id, workspace_id, worker_id) -> {lock_token, locked_until} or fail
+Rule
+- You acquire lock if:
+a) no lock row exists for session_id
+b) OR existing lock is expired (locked_until < now())
+c) OR existing lock is held by you with same token (re-entrant renewal)
+Atomic logic (conceptual)
+- try insert
+- if conflict, update only if expired
+- if update affected 0 rows, you failed to acquire
+You MUST return a unique lock_token to the worker.
+The worker must include lock_token on every write afterwards.
+Why lock_token matters
+- If lock expires and another worker acquires it,
+the old worker must not be allowed to continue writing checkpoints.
+============================================================
+8.5 RENEW LOCK (HEARTBEAT)
+============================================================
+Function: renew_lock(session_id, worker_id, lock_token) -> ok/fail
+Rules
+- renew only if lock_token matches current row
+- extend locked_until = now() + lease_seconds
+- update heartbeat_at = now()
+If renew fails
+- worker must STOP immediately
+- because it lost the lock (someone else acquired it)
+============================================================
+8.6 RELEASE LOCK (CLEAN EXIT)
+============================================================
+Function: release_lock(session_id, worker_id, lock_token) -> ok
+Rules
+- delete row OR set locked_until = now() (expire it)
+- only if lock_token matches
+- do not allow a worker to release a lock it doesn’t own
+Recommendation
+Expire instead of delete if you want debugging:
+- set locked_until = now(), keep row and metadata
+But primary key constraint means 1 row always exists anyway.
+Simplest: delete the row.
+============================================================
+8.7 “LOCK GATING” RULE (EVERY WRITE MUST CHECK LOCK)
+============================================================
+Critical rule
+Any backend operation that mutates session state must require:
+- session_id
+- lock_token
+Writes include
+- append_event
+- checkpoint_snapshot
+- begin_tool_action
+- finish_tool_action
+- request_approval
+- decide_approval
+Why
+This prevents a dead worker from continuing to write after losing lock.
+Implementation pattern
+- When worker starts, acquire_lock -> get lock_token
+States Layer (main)
+40- Store lock_token in runtime memory
+- Every write includes lock_token
+- DB checks lock_token matches current lock owner
+How to enforce in DB
+Option A (application enforced)
+- every API checks lock row before writing
+Option B (DB enforced via RPC functions)
+- only allow writes through SECURITY DEFINER RPC
+- RPC checks lock_token then performs insert/update
+This is stronger and recommended if you want correctness.
+============================================================
+8.8 EDGE CASES (REAL WORLD FAILURE MODES)
+============================================================
+Edge Case A: Worker crashes mid-session
+- lock is not renewed
+- locked_until expires
+- new worker acquires lock and resumes safely from snapshot + events
+Edge Case B: Network partition causes renew failures
+- worker loses lock
+- must stop
+- another worker may acquire
+This prevents split-brain execution.
+Edge Case C: Long external tool call blocks renew
+- worker must renew in a separate async timer thread while tool call is in progress
+- if cannot renew, pause session for safety (or mark recoverable error)
+Edge Case D: Two workers start at same time
+- only one acquires lock due to atomic upsert
+- other backs off and retries later
+Edge Case E: Worker continues writing after losing lock
+- prevented by lock_token gating
+- DB or API rejects writes
+Edge Case F: Locked session stuck forever
+- lease expiration prevents permanent deadlocks
+- admin override endpoint can force expire lock (service role only)
+============================================================
+8.9 BACKOFF + RETRY STRATEGY (SO WORKERS DON’T HAMMER DB)
+============================================================
+When lock acquisition fails
+- wait random jitter 200ms to 1500ms
+- retry limited times
+- if still fails, exit and let scheduler retry later
+For high throughput
+- use a queue scheduler that only assigns unlocked sessions
+============================================================
+8.10 PASTE READY SUPABASE SQL (LOCK TABLE + INDEXES)
+============================================================
+create table if not exists public.workflow_state_locks (
+session_id uuid primary key,
+workspace_id uuid not null,
+locked_by text not null,
+lock_token uuid not null,
+locked_at timestamptz not null default now(),
+locked_until timestamptz not null,
+heartbeat_at timestamptz not null default now(),
+attempt int not null default 1,
+metadata jsonb not null default '{}'::jsonb
+);
+create index if not exists idx_ws_locks_workspace_until
+on public.workflow_state_locks (workspace_id, locked_until);
+create index if not exists idx_ws_locks_lockedby_until
+on public.workflow_state_locks (locked_by, locked_until);
+States Layer (main)
+41-- RLS (recommended: backend only)
+alter table public.workflow_state_locks enable row level security;
+drop policy if exists "locks_select_org_members" on public.workflow_state_locks;
+drop policy if exists "locks_write_service_role" on public.workflow_state_locks;
+-- allow org/workspace members to read lock status (optional)
+create policy "locks_select_org_members"
+on public.workflow_state_locks
+for select
+using (
+exists (
+select 1
+from public.workspace_memberships m
+where m.workspace_id = workflow_state_locks.workspace_id
+and m.user_id = auth.uid()
+and m.status = 'active'
+)
+);
+-- only service role can write locks
+create policy "locks_write_service_role"
+on public.workflow_state_locks
+for all
+using (auth.role() = 'service_role')
+with check (auth.role() = 'service_role');
+============================================================
+8.11 RPC FUNCTIONS (RECOMMENDED) FOR ATOMIC ACQUIRE/RENEW
+============================================================
+Supabase best practice is to implement lock logic in RPC to keep it atomic.
+RPC 1: acquire_workflow_lock(session_id, workspace_id, locked_by, lease_seconds)
+- tries insert
+- if conflict, updates only if expired
+- returns lock_token and locked_until if acquired
+- returns null if not acquired
+RPC 2: renew_workflow_lock(session_id, lock_token, lease_seconds)
+- updates locked_until only if lock_token matches
+- returns success boolean
+RPC 3: release_workflow_lock(session_id, lock_token)
+- deletes row only if lock_token matches
+- returns success boolean
+Why RPC
+- you guarantee atomicity inside DB
+- you avoid race conditions from application-side multi queries
+If you want, I can write the exact SQL for these RPC functions next.
+============================================================
+8.12 ACCEPTANCE TESTS (MUST PASS)
+============================================================
+T1 Single executor
+- start two workers at same time
+- only one should acquire lock
+T2 Crash recovery
+- acquire lock, start run, kill worker
+- wait for lock expiry
+- second worker acquires lock and resumes
+T3 Split brain prevention
+- worker A acquires lock and stops renewing
+- worker B acquires after expiry
+- worker A attempts checkpoint with old token -> must be rejected
+T4 Long tool call
+- while waiting 60s, renew keeps lock alive
+- no other worker can acquire during the wait
+============================================================
+============================================================
+States Layer (main)
+42States Layer (main)
+43
