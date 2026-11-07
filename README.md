@@ -1,48 +1,23 @@
 <!-- presentation:start -->
 <p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator.svg" width="100%" alt="Mr. Elite orchestrator: a 5 phase engine that turns a plain language request into policy checked, approved and logged actions"></p>
 
-## Summary
+Mr. Elite is the engine behind an AI employee. A person asks for something in plain language, for example "set up a call with the candidate and email the offer", and the engine turns it into small steps, checks each step against company rules, asks a human where it should, runs the rest and then measures how much time it saved. It is built for teams that want an assistant to act in Gmail and Calendar without being left unsupervised. 5 startups piloted the AI employee and 1 company piloted the Admin AI employee. Senior AI engineers at IBM, Adobe and Google reviewed it.
 
-Mr. Elite is a Python and FastAPI orchestration engine that turns a vague request such as "set up a call with the candidate and email the offer" into a graph of small, checked actions. Every request moves through 5 phases: Planning, Reasoning, Control, Execution and Evaluation. Nothing runs until policy, privacy, security, rate and approval gates have all passed, and every run is scored afterwards. It is built as a closed loop, not a chatbot: the unit of work is a typed `ExecutionAtom`, and each phase reads and enriches the same atom. 5 startups piloted the AI employee and 1 company piloted the Admin AI employee; senior AI engineers at IBM, Adobe and Google reviewed it.
+## The problem
 
-## At a glance
+Agents could already call Gmail or Calendar. Nobody had taught them to think in order, and nobody could trust them to act for a company. The gaps were specific:
 
-| Measure | Value |
-|---|---|
-| Phases in the pipeline | 5 (Planning, Reasoning, Control, Execution, Evaluation) |
-| Python files under `app/` | 129 |
-| Lines of Python in the repo | 26,042 across 130 files |
-| HTTP endpoints | 29 (4 in `app/main.py`, 25 across 5 routers) |
-| SQL migration files | 8 |
-| Database tables created | 23 distinct, from 24 `CREATE TABLE` statements |
-| Embedding column | `vector(768)` in pgvector |
-| Agents in the dispatcher registry | 6 named agents, 7 name mappings (2 spellings of summariser) |
-| LangGraph agent graphs | 2 (email, calendar) |
-| Hard timeout per tool call | 30 seconds |
-| Retry limit | 3 retries, backoff capped at 3,600 seconds |
-| Session time to live | 7 days |
-| Postman requests shipped | 5 named entries in the collection |
-| Commits | 3 (March 2026 and November 2026) |
+- "Onboard the new hire" is really 6 to 10 steps with dependencies. A single model call does not keep them in order.
+- Companies have written rules, such as "offers above a limit need approval". A rule applies to one step, not to the whole prompt.
+- Emails, phone numbers and keys end up in prompts, and a mail body can carry instructions meant to hijack the agent.
+- Tools fail. Without timeouts, retries and a rule that a failed step blocks the steps that depend on it, one bad call leaves a half finished job.
+- Nobody could say what the assistant saved, because nothing compared manual time with run time.
 
-## What it is
+The engine puts one named component against each gap.
 
-Mr. Elite (the repository is `mr-elite-orchestrator`) is the execution runtime behind an AI employee. A caller sends a prompt together with a `workspace_id`, `org_id`, `user_id` and chat history. The engine classifies the prompt, plans it, enriches each planned step with policy, resource, memory and state context, checks it against four control gates, dispatches it to a tool or a sub-agent, and finally measures how much time the run saved.
+## How I approached it
 
-The design rule is stated in the code and the docs: decision first, then validate, then control and secure, then execute, then evaluate and learn. It is an autonomous orchestration engine with deterministic gates, strict data contracts, human escalation and a learning loop.
-
-## Why it was built
-
-An agent that can call Gmail or Calendar is easy to build. An agent that can be trusted to call them for a company is harder, and the gaps are specific:
-
-- A single prompt like "onboard the new hire" is really 6 to 10 steps with dependencies, and a plain LLM call does not keep them in order.
-- A company has written rules ("offers above a limit need approval", "no email to external domains without review") that must be checked against each step, not against the whole prompt.
-- Emails, phone numbers and API keys leak into prompts and tool output, and mail bodies can carry prompt injection.
-- Tools fail. Without retries, timeouts, idempotency keys and a rule that a failed step blocks its dependents, one bad call leaves a half finished job.
-- Nobody can say what the assistant saved, because nothing measures manual time against run time.
-
-Mr. Elite puts a named component against each of those problems.
-
-## How it works
+The rule written into the code and docs is: decide first, validate, control and secure, execute, then evaluate and learn. Each phase reads and enriches the same typed object, so nothing is passed around as loose text.
 
 ```mermaid
 flowchart LR
@@ -58,96 +33,40 @@ flowchart LR
   F -.->|"learned preferences"| B
 ```
 
-1. **Phase 1, Planning** (`app/phase1/`). A pre-flight vector check rejects forbidden requests before any model call. A regex classifier catches greetings, abort commands and system commands. A semantic classifier labels the prompt `CHAT`, `QUERY`, `TASK` or `GOAL` with a complexity score from 1 to 10, a domain and a risk level. A Chain of Thought planner handles `GOAL` requests, and the atomizer converts the plan into a list of `ExecutionAtom` objects with UUIDs, dependencies and risk tags.
-2. **Phase 2, Reasoning** (`app/phase2/`). Two threads run together with `asyncio.gather`. Thread A is logic: a policy engine (vector match, then a judge) and a resource engine. Thread B is context: a memory engine (episodic and reflective recall) and deterministic state checks such as budget and role access. The result is merged into each atom's `context_data`.
-3. **Phase 3, Control** (`app/phase3/`, `app/core/control/`). A privacy guard, a security guard, a reliability guard and an approval gate run in order. Atoms come out `APPROVED`, `BLOCKED` or `PAUSED`.
-4. **Phase 4, Execution** (`app/phase4/`). A central dispatcher routes each approved atom to a `CODE_TOOL`, an `AI_AGENT` or a `WORKFLOW`, runs independent atoms in parallel and chains outputs between dependent ones.
-5. **Phase 5, Evaluation** (`app/phase5/`). In the background, a validator labels the session `COMPLETED`, `PARTIAL`, `BLOCKED` or `FAILED`, the MDS engine scores time saved, the analytics store logs it, and the smart recommender turns user edits into preference rules for later runs.
+**Key decisions**
 
-## What makes it different
+| Decision | Why | Trade-off |
+|---|---|---|
+| One typed `ExecutionAtom` passed through all 5 phases | Every phase can add context without breaking the next one (`app/phase1/atoms.py`) | Every change to the contract touches all phases |
+| Rules checked per step, not per prompt | "Send an email" can be fine while "send it to an outside domain" is not | More checks per request |
+| A forbidden request is rejected before any model call | Cheaper and safer than asking a model to refuse (`app/phase1/pre_flight_check.py`) | The rule list has to be kept current |
+| Gates are fixed code, not model opinion | Privacy, security, rate limits and approval give the same answer every time (`app/core/control/`) | Less flexible than a judge model |
+| A failed step blocks its dependents, independent steps still run | Avoids half finished jobs without stopping everything | Needs the dependency graph to be right |
+| Time saved is scored against stored manual benchmarks | Gives the team a number to argue about (`app/phase5/mds_engine.py`) | The benchmarks are estimates that someone must maintain |
 
-<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/where-it-sits.svg" width="100%" alt="Venn diagram: Mr. Elite sits where planning, safety control and learning meet"></p>
+## What I built
 
-| Capability | A chatbot | A script of API calls | A manual process | Mr. Elite |
-|---|---|---|---|---|
-| Breaks a vague goal into ordered steps | One reply, no step graph | Fixed at coding time | A person decides | Planner plus atomizer produce a dependency graph |
-| Checks company rules per step | Not available | Hard coded if statements | Memory and habit | Vector matched policies, judged per atom, traffic light result |
-| Redacts PII and blocks injection | Not available | Rarely | Trust | Privacy and security guards before execution |
-| Pauses for a human on risky steps | Not available | Not available | Always, for everything | Only `PAUSED` atoms and high risk tools wait |
-| Retries and timeouts | Not available | Hand written per call | A person retries | Exponential backoff, 3 retries, 30 second hard timeout |
-| Audit trail | Chat log | Application logs | Email trail | Execution logs, security audit logs, policy decisions in SQL |
-| Measures time saved | Not available | Not available | Not measured | MDS per task against stored manual benchmarks |
-| Learns from user edits | Not available | Not available | Not captured | Edits become preference rules in a vector store |
+| Part | What it does | Where |
+|---|---|---|
+| Intent classifier | Labels a prompt `CHAT`, `QUERY`, `TASK` or `GOAL`, with complexity, domain and risk | `app/phase1/classifier.py` |
+| Planner and atomizer | Breaks a goal into steps with ids, dependencies and risk tags | `app/phase1/cot_planner.py`, `atomizer.py` |
+| Policy engine | Matches company rules to each step and returns a traffic light | `app/phase2/policy/` |
+| Memory and state checks | Recalls past runs and checks budget and role access | `app/phase2/memory/`, `app/phase2/checks/` |
+| Control gates | Redacts personal data, strips injection text, rate limits, queues approvals | `app/core/control/` |
+| Dispatcher | Sends each approved step to a tool, an agent or a workflow, in parallel where possible | `app/phase4/dispatcher.py` |
+| Retry and timeout | 3 retries with backoff, a 30 second limit per call | `app/phase4/retry_engine.py`, `app/core/execution/timeout.py` |
+| Gmail and Calendar tools | Read, draft and send mail; list, create, update and delete events | `app/tools/` |
+| Email and calendar agents | Two LangGraph graphs | `app/agents/email/`, `app/agents/calendar/` |
+| Evaluation | Labels the run, scores time saved, turns user edits into preference rules | `app/phase5/` |
+| Memory ingestion | Loads documents into the vector store | `app/ingestion/` |
 
-## Features
+## How it works
 
-| Feature | Where it lives in the code |
-|---|---|
-| 4 way intent classification (`CHAT`, `QUERY`, `TASK`, `GOAL`) | `app/phase1/classifier.py`, `classifier_prompt.py` |
-| Pre-flight blocking policy search before any LLM call | `app/phase1/pre_flight_check.py`, `app/phase3/preflight.py` |
-| Chain of Thought planner with re-planning | `app/phase1/cot_planner.py`, `cot_prompt.py` |
-| Typed `ExecutionAtom` contract with status lifecycle | `app/phase1/atoms.py` |
-| Workspace cache of available agents and tools | `app/phase1/workspace_cache.py` |
-| Policy engine with traffic light decisions | `app/phase2/policy/policy_engine.py` |
-| Episodic and reflective memory with hybrid retrieval | `app/phase2/memory/` |
-| Deterministic state and resource checks | `app/phase2/checks/` |
-| Event sourced workflow state, locks and reducer | `app/phase2/states/` (tables `workflow_states`, `workflow_state_events`, `workflow_state_locks`) |
-| PII regex patterns for email, phone, API key and card | `app/core/control/patterns.py` |
-| Prompt injection patterns such as "ignore previous instructions" | `app/core/control/patterns.py`, `segment1_sanitizer.py` |
-| Redis rate limits with a safe fallback wrapper | `app/core/control/safe_redis.py`, `redis_client.py` |
-| Approval queue and resume after approval | `app/core/control/approval_service.py`, `resume_service.py` |
-| Immutable audit logger | `app/core/control/audit_logger.py` |
-| Central dispatcher with 3 runways | `app/phase4/dispatcher.py` |
-| Retry engine with exponential backoff | `app/phase4/retry_engine.py` |
-| 30 second hard timeout and argument sanitizer | `app/core/execution/timeout.py`, `sanitizer.py` |
-| Mid-run clarification, memory and replan callbacks | `app/phase4/callbacks/` |
-| Gmail tool: list threads, read thread, create draft, send | `app/tools/gmail.py` |
-| Calendar tool: list, create, update, delete events, free and busy | `app/tools/calendar.py` |
-| Email and calendar agents as LangGraph graphs | `app/agents/email/graph.py`, `app/agents/calendar/graph.py` |
-| Summariser micro-agent | `app/microagents/summarizer/` |
-| Maturity Delta Score engine | `app/phase5/mds_engine.py` |
-| Implicit feedback to preference rules | `app/phase5/smart_recommender.py` |
-| Embedding ingestion for memory, policies and resources | `app/ingestion/`, `app/routers/ingestion.py` |
-
-## By the numbers
-
-<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/code-by-area.svg" width="100%" alt="Bar chart of Python lines per area: core 5,038, phase 2 4,219, phase 4 3,025, routers 2,630, entry files 2,495, phase 5 1,900, agents 1,822, phase 1 1,795, phase 3 1,153"></p>
-
-Lines of Python per area of `app/`. The shared `core` infrastructure and the Reasoning phase are the two largest.
-
-<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/endpoints-by-router.svg" width="100%" alt="Bar chart of endpoints per router: phase 3 has 7, phase 1 has 6, ingestion, main, phase 2 and phase 4 have 4 each"></p>
-
-HTTP endpoints per router. Phase 3 has the most because approvals, privacy and security checks are each exposed separately.
-
-<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/tables-by-migration.svg" width="100%" alt="Column chart of tables created per migration file: base 1, phase 2 four, memory three, states three, phase 3 three, phase 4 four, phase 5 six"></p>
-
-Tables created by each SQL migration, in build order. Phase 5 adds the most tables because analytics, benchmarks, feedback and recommendations each have their own.
-
-## Architecture
-
-```mermaid
-sequenceDiagram
-  participant U as "Caller"
-  participant P1 as "Phase 1 Planner"
-  participant P2 as "Phase 2 Reasoner"
-  participant P3 as "Phase 3 Control"
-  participant AP as "Approver"
-  participant P4 as "Phase 4 Dispatcher"
-  participant T as "Tool or agent"
-  participant P5 as "Phase 5 Evaluator"
-  U->>P1: "prompt and ids"
-  P1->>P2: "atoms with dependencies"
-  P2->>P3: "atoms with context_data"
-  P3->>AP: "PAUSED atom"
-  AP-->>P3: "yes or no"
-  P3->>P4: "APPROVED atoms"
-  P4->>T: "call with idempotency key"
-  T-->>P4: "result or error"
-  P4->>U: "formatted response"
-  P4-)P5: "session results in the background"
-```
-
-The state of a single atom follows the lifecycle below.
+1. **Planning** (`app/phase1/`). A pre-flight check rejects forbidden requests. A classifier labels the prompt. Goals go to a Chain of Thought planner, and the atomizer turns the plan into a list of atoms.
+2. **Reasoning** (`app/phase2/`). Two threads run together: one checks policy and resources, the other recalls memory and checks state. Results are merged into each atom.
+3. **Control** (`app/phase3/`, `app/core/control/`). Privacy, security, reliability and approval gates run in order. Each atom comes out `APPROVED`, `BLOCKED` or `PAUSED`.
+4. **Execution** (`app/phase4/`). Approved atoms run in parallel where they are independent. Outputs flow into dependent steps.
+5. **Evaluation** (`app/phase5/`). In the background the run is labelled `COMPLETED`, `PARTIAL`, `BLOCKED` or `FAILED`, time saved is scored, and edits become preferences for next time.
 
 ```mermaid
 stateDiagram-v2
@@ -163,85 +82,81 @@ stateDiagram-v2
   BLOCKED --> [*]
 ```
 
-| Folder or module | Lines | What it holds |
-|---|---|---|
-| `app/core/` (38 files) | 5,038 | Config, Gemini client, Supabase client, session service, control plane, execution guards |
-| `app/phase2/` (23 files) | 4,219 | Policy, resource, memory, state engines and the parallel evaluator |
-| `app/phase4/` (13 files) | 3,025 | Dispatcher, orchestrator, retry engine, result store, workflow manager, callbacks |
-| `app/routers/` (7 files) | 2,630 | FastAPI routers for each phase and for ingestion |
-| `app/main.py`, `main_orchestrator.py`, `schemas.py` | 2,495 | App entry point and the high level orchestration logic |
-| `app/phase5/` (6 files) | 1,900 | Validator, MDS engine, analytics store, smart recommender |
-| `app/agents/` (14 files) | 1,822 | Email and calendar agents with LangGraph graphs |
-| `app/phase1/` (13 files) | 1,795 | Classifier, planner, atomizer, atoms and plans |
-| `app/phase3/` (3 files) | 1,153 | Pre-flight and agent compatibility validation |
-| `app/ingestion/`, `app/tools/`, `app/microagents/` | 1,786 | Embedders, Gmail and Calendar tools, summariser |
-| `*.sql` (8 files) | n/a | Migrations for memory, states, control, execution and evaluation tables |
+## What makes it different
 
-Data lives in Supabase PostgreSQL with pgvector (768 dimension embeddings from the Gemini embedding model), Redis for rate counters, and MongoDB for OAuth tool tokens read by `app/core/tool_tokens.py`.
+<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/where-it-sits.svg" width="100%" alt="Venn diagram: Mr. Elite sits where planning, safety control and learning meet"></p>
+
+| Capability | A chatbot | A script of API calls | A person doing it by hand | Mr. Elite |
+|---|---|---|---|---|
+| Breaks a vague goal into ordered steps | One reply, no step graph | Fixed when written | The person decides | Planner and atomizer build a dependency graph |
+| Checks company rules per step | No | Hard coded if statements | Memory and habit | Rules matched and judged per step |
+| Redacts personal data, blocks injection | No | Rarely | Trust | Guards run before execution |
+| Pauses for a human on risky steps | No | No | Always, for everything | Only paused and high risk steps wait |
+| Retries and timeouts | No | Written by hand per call | The person retries | Backoff, 3 retries, 30 second limit |
+| Audit trail | Chat log | Application logs | Email trail | Execution, security and policy records in SQL |
+| Measures time saved | No | No | Not measured | Scored per task against manual benchmarks |
+
+## By the numbers
+
+<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/code-by-area.svg" width="100%" alt="Bar chart of Python lines per area, with core and Reasoning the largest"></p>
+
+The shared infrastructure and the Reasoning phase hold the most code, which fits a system whose hard part is deciding, not calling.
+
+<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/endpoints-by-router.svg" width="100%" alt="Bar chart of endpoints per router: phase 3 has 7, phase 1 has 6, the rest have 4"></p>
+
+Phase 3 exposes the most endpoints because privacy, security and approvals can each be tested on their own.
+
+<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator/tables-by-migration.svg" width="100%" alt="Column chart of tables created per migration file"></p>
+
+Evaluation adds the most tables, because analytics, benchmarks, feedback and recommendations each need their own record.
+
+## What this shows
+
+- The problem is stated as five concrete gaps, and each gap has a named component (`app/phase3/`, `app/phase5/`).
+- Safety is code that gives the same answer every time, not a model's opinion. Privacy, injection, rate and approval gates sit in `app/core/control/`.
+- Failure is planned for: 3 retries, a 30 second limit, and a failed step that stops only its own dependents.
+- The system keeps score. It measures time saved and learns from user edits, so its value can be argued with numbers.
+
+## What I would do next
+
+- Add automated tests. The repo has none, only a Postman collection with 5 requests.
+- Split `app/main.py` (1,870 lines) into smaller modules.
+- Move the dispatcher's agent registry into configuration instead of code.
+- Back the manual time benchmarks with measured pilot data.
 
 ## Tech stack
 
 | Technology | What it does here |
 |---|---|
-| Python and FastAPI | HTTP layer and async request handling |
+| Python, FastAPI | HTTP layer and async request handling |
 | Pydantic | `ExecutionAtom`, plan and result contracts |
-| LangGraph | Email and calendar agent graphs with fetch, generate and execute nodes |
-| Google Gemini (`google-genai`) | Classification, planning, judging and embeddings |
-| Supabase and pgvector | Policies, memory, resources, states, logs and vector search |
-| Redis | Rate limit counters for the reliability guard |
-| MongoDB (`pymongo`) | Stores OAuth tokens for Gmail and Calendar |
+| LangGraph | Email and calendar agent graphs |
+| Google Gemini | Classification, planning, judging and embeddings |
+| Supabase, pgvector | Policies, memory, state, logs and vector search (768 dimensions) |
+| Redis | Rate limit counters |
+| MongoDB | OAuth tokens for Gmail and Calendar |
 | Google API client | Gmail and Calendar calls |
-| NetworkX | Dependency graph imported in the atomizer (`app/phase1/atomizer.py`) |
-| `pypdf`, `python-docx`, `tiktoken` | Reading documents for ingestion and counting tokens |
+| NetworkX | Dependency graph in the atomizer |
 
 ## Run it locally
-
-The repo ships `requirements.txt` and a Postman collection. The README lists environment variables for Gemini, Supabase, Redis and MongoDB.
 
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Then apply the SQL files (`migration.sql`, then the `PHASE2` to `PHASE5` migrations) to your Supabase project and import `Mr_Elite_Postman_Collection.json` to call `/health`, `/classify` and the `/phase1` to `/phase4` test routes.
+Apply `migration.sql` and then the `PHASE2` to `PHASE5` SQL files to your Supabase project. Set the environment variables listed in `README.md` for Gemini, Supabase, Redis and MongoDB. Import `Mr_Elite_Postman_Collection.json` to call the test routes.
 
-## Who it is for
+Built by [Rohit Swerashi](https://github.com/therohitji), Founder & CEO of [GeniOS](https://thegenios.com). [Book a call](https://cal.com/rohitswerashi/genios).
 
-- Teams building an AI employee that must act in Gmail and Calendar under written company policy.
-- Engineers who want a reference for plan, check, approve, execute and score as separate, testable stages.
-- Founders who need a human approval step on risky actions and a record of who approved what.
-- Anyone studying multi-agent orchestration with a typed contract passed between phases.
+<details>
+<summary>Full technical documentation</summary>
 
-## FAQ
-
-**What is an ExecutionAtom?**
-It is the single Pydantic model every phase reads and writes: an id, a target agent, a tool name and arguments, dependencies, a risk level, a status and the context added by Phase 2. It lives in `app/phase1/atoms.py`.
-
-**How does an AI agent get human approval before it acts?**
-Phase 2 marks a soft policy violation on a high risk step as yellow. Phase 3 turns that into a `PAUSED` atom in the approval queue. Execution only continues after a yes, handled by `approval_service.py` and `resume_service.py`.
-
-**How does it stop prompt injection and data leaks?**
-The privacy guard scans for email, phone, API key and card patterns and redacts or blocks. The security guard matches phrases such as "ignore previous instructions" in tool fed content and strips or restricts it.
-
-**What happens when a tool call fails?**
-The retry engine waits `base x 2^retry_count`, up to 3 retries and a 3,600 second cap. A failed atom blocks the atoms that depend on it, while independent atoms still run.
-
-**How does it measure the value of automation?**
-The Maturity Delta Score in `mds_engine.py` compares stored manual time per task type against run time, weighted by complexity, using the `task_effort_benchmarks` table.
-
-**Is it a chatbot?**
-No. `CHAT` and `QUERY` prompts exit early with an answer, but `TASK` and `GOAL` prompts go through the full gated pipeline.
-
-Built by [Rohit Swerashi](https://github.com/therohitji), Founder & CEO of [GeniOS](https://thegenios.com).
-<!-- presentation:end -->
-
-## Full documentation
-
-# MR ELITE — Autonomous Orchestration Engine
+# MR ELITE, Autonomous Orchestration Engine
 
 > **Decision First → Validate → Control/Secure → Execute → Evaluate/Learn**
 
-MR ELITE (codename **GeniOS**) is a 5-phase autonomous orchestration engine that converts raw, vague user intent into safe, atomic, policy-compliant actions. It is **not a chatbot** — it is a closed-loop execution runtime with deterministic gates, strict contracts, human escalation, and a learning loop.
+MR ELITE (codename **GeniOS**) is a 5-phase autonomous orchestration engine that converts raw, vague user intent into safe, atomic, policy-compliant actions. It is **not a chatbot**, it is a closed-loop execution runtime with deterministic gates, strict contracts, human escalation, and a learning loop.
 
 ---
 
@@ -341,14 +256,14 @@ Converts a raw user prompt into a structured DAG of `ExecutionAtom` objects.
 | 4 | Atomizer | `atomizer.py` | Converts `ExecutionPlan` → `List[ExecutionAtom]`. Validates agent/tool names against workspace. Creates UUIDs, dependencies, risk tags. |
 
 **Supporting files:**
-- `atoms.py` — `ExecutionAtom` schema (the primary contract for all phases)
-- `plans.py` — `PlanStep` and `ExecutionPlan` schemas
-- `workspace_cache.py` — Caches available agents/tools from Supabase
-- `config.py` — Phase 1 configuration constants
-- `classifier_prompt.py` — LLM prompt template for semantic classification
-- `cot_prompt.py` — LLM prompt template for Chain-of-Thought planning
-- `param_extractor.py` — Parameter extraction utilities
-- `semantic_router.py` — Routes requests by intent type
+- `atoms.py`, `ExecutionAtom` schema (the primary contract for all phases)
+- `plans.py`, `PlanStep` and `ExecutionPlan` schemas
+- `workspace_cache.py`, Caches available agents/tools from Supabase
+- `config.py`, Phase 1 configuration constants
+- `classifier_prompt.py`, LLM prompt template for semantic classification
+- `cot_prompt.py`, LLM prompt template for Chain-of-Thought planning
+- `param_extractor.py`, Parameter extraction utilities
+- `semantic_router.py`, Routes requests by intent type
 
 **Output:** `Phase1Result`
 ```python
@@ -452,10 +367,10 @@ Final checkpoint before real-world execution. Sequential middleware pipeline:
 | **Approval Gate** | Final human checkpoint for `PAUSED` atoms or `HIGH` risk tools | Hold execution until explicit approval (Yes/No in UI) |
 
 **Supporting components:**
-- `preflight.py` — Ultra-fast vector search for BLOCK policies
-- `agent_compatibility_validator.py` — Validates agent assignments against capability registry
-- `app/core/control/approval_service.py` — Manages the approval queue
-- `app/core/control/audit_logger.py` — Immutable security event log
+- `preflight.py`, Ultra-fast vector search for BLOCK policies
+- `agent_compatibility_validator.py`, Validates agent assignments against capability registry
+- `app/core/control/approval_service.py`, Manages the approval queue
+- `app/core/control/audit_logger.py`, Immutable security event log
 
 **Output:** `Phase3Result`
 ```python
@@ -514,12 +429,12 @@ AGENT_HANDLERS = {
 - **Immutable audit log:** Input, output, tool, timestamps, decision path
 
 **Key components:**
-- `orchestrator.py` — Manages atom sequencing, dependency topological sort, parallel execution
-- `retry_engine.py` — Exponential backoff with configurable limits
-- `result_store.py` — Persists execution results to database
-- `response_formatter.py` — Formats results for user-facing response
-- `workflow_manager.py` — Manages multi-step workflow execution
-- `callbacks/` — Clarification, memory, and replan callbacks during execution
+- `orchestrator.py`, Manages atom sequencing, dependency topological sort, parallel execution
+- `retry_engine.py`, Exponential backoff with configurable limits
+- `result_store.py`, Persists execution results to database
+- `response_formatter.py`, Formats results for user-facing response
+- `workflow_manager.py`, Manages multi-step workflow execution
+- `callbacks/`, Clarification, memory, and replan callbacks during execution
 
 **Output:** `Phase4Result`
 ```python
@@ -551,7 +466,7 @@ Runs **asynchronously in the background** after execution completes.
 | Component | File | Purpose |
 |-----------|------|---------|
 | **Session Validator** | `validator.py` | Validates execution results against schema. Returns status: `COMPLETED`, `PARTIAL`, `BLOCKED`, `FAILED`. |
-| **MDS Engine** | `mds_engine.py` | Calculates **Maturity Delta Score** — quantifies time saved. Formula: `MDS = Σ(T_manual - T_execution) × W_complexity`. References `task_effort_benchmarks` table. |
+| **MDS Engine** | `mds_engine.py` | Calculates **Maturity Delta Score**, quantifies time saved. Formula: `MDS = Σ(T_manual - T_execution) × W_complexity`. References `task_effort_benchmarks` table. |
 | **Analytics Store** | `analytics_store.py` | Logs metrics to `user_analytics_ledger`. Stores session summaries in `execution_sessions`. |
 | **Smart Recommender** | `smart_recommender.py` | Implicit feedback loop: detects user edits → extracts preference rules → stores in vector DB. Next runs retrieve learned rules for personalization. |
 | **Evaluation Orchestrator** | `evaluator.py` | Coordinates the full evaluation pipeline: validate → MDS → analytics → learning. |
@@ -623,7 +538,7 @@ PENDING → (Phase 2 enrichment) → APPROVED | PAUSED | BLOCKED
 ```
 mr-elite-orchestrator/
 ├── app/
-│   ├── main.py                        # FastAPI app entry point — wires all 5 phases
+│   ├── main.py                        # FastAPI app entry point, wires all 5 phases
 │   ├── main_orchestrator.py           # High-level orchestration logic
 │   ├── schemas.py                     # Shared Pydantic schemas
 │   │
@@ -779,7 +694,7 @@ mr-elite-orchestrator/
 
 ## Core Modules
 
-### `app/core/gemini_client.py` — LLM Client
+### `app/core/gemini_client.py`, LLM Client
 
 All LLM calls go through this module. Uses **Google Gemini 2.5 Flash**.
 
@@ -787,34 +702,34 @@ All LLM calls go through this module. Uses **Google Gemini 2.5 Flash**.
 |----------|-------------|--------|----------|
 | `call_gemini(prompt)` | 0.2 | JSON | Structured classification, planning |
 | `call_gemini_text(prompt)` | 0.7 | Natural text | Chat responses, content generation |
-| `call_gemini_analysis(prompt)` | — | Structured JSON | Analysis tasks |
-| `call_gemini_embedding(text)` | — | 768-dim vector | Semantic search (Gemini Embedding 001) |
+| `call_gemini_analysis(prompt)` |, | Structured JSON | Analysis tasks |
+| `call_gemini_embedding(text)` |, | 768-dim vector | Semantic search (Gemini Embedding 001) |
 
-### `app/core/supabase_client.py` — Database Client
+### `app/core/supabase_client.py`, Database Client
 
 PostgreSQL + pgvector via Supabase.
 
-- `query_policies_vector()` — Calls `match_policies` RPC for vector similarity search
-- `query_resources_vector()` — Calls `match_resources` RPC for resource retrieval
+- `query_policies_vector()`, Calls `match_policies` RPC for vector similarity search
+- `query_resources_vector()`, Calls `match_resources` RPC for resource retrieval
 - Service role client (bypasses RLS) for server-side operations
 - UUID validation helpers
 
-### `app/core/tool_factory.py` — Tool Instantiation
+### `app/core/tool_factory.py`, Tool Instantiation
 
 Creates fresh tool instances with injected OAuth tokens.
 
-- `GmailTool` — Google Gmail API v1
-- `CalendarTool` — Google Calendar API v3
+- `GmailTool`, Google Gmail API v1
+- `CalendarTool`, Google Calendar API v3
 - Tokens retrieved from MongoDB per user
 
-### `app/core/tool_tokens.py` — OAuth Token Store
+### `app/core/tool_tokens.py`, OAuth Token Store
 
 Retrieves OAuth tokens from MongoDB.
 
 - Token lifecycle: access_token, refresh_token, client_id, client_secret
 - Injected into Google Credentials for API calls
 
-### `app/core/session/session_service.py` — Session Management
+### `app/core/session/session_service.py`, Session Management
 
 Manages workflow session lifecycle with Supabase persistence.
 
@@ -823,7 +738,7 @@ Manages workflow session lifecycle with Supabase persistence.
 - **Clarification TTL:** 1 hour
 - State stored in `workflow_states.state_data` (JSONB)
 
-### `app/core/clarification_manager.py` — Multi-Turn Clarification
+### `app/core/clarification_manager.py`, Multi-Turn Clarification
 
 Handles missing information flows during execution.
 
@@ -885,7 +800,7 @@ async def handle_skill(
 | `summarize_text` | LOW | Summarize arbitrary text |
 | `summarize_emails` | LOW | Summarize email threads |
 
-Can be chained after other agents — receives previous atom output via `metadata["previous_output"]` or `global_context`.
+Can be chained after other agents, receives previous atom output via `metadata["previous_output"]` or `global_context`.
 
 ---
 
@@ -945,7 +860,7 @@ Both tools return structured error responses with `type`, `message`, `operation`
 }
 ```
 
-### Phase 1 — Planning
+### Phase 1, Planning
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -953,7 +868,7 @@ Both tools return structured error responses with `type`, `message`, `operation`
 | `POST` | `/phase1/classify` | Classification only (no planning/atomization) |
 | `POST` | `/phase1/plan` | Planning only (skip classification) |
 
-### Phase 2 — Reasoning
+### Phase 2, Reasoning
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -961,7 +876,7 @@ Both tools return structured error responses with `type`, `message`, `operation`
 | `POST` | `/phase2/enrich` | Single atom enrichment |
 | `POST` | `/phase2/policy` | Policy check only |
 
-### Phase 3 — Control
+### Phase 3, Control
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -971,7 +886,7 @@ Both tools return structured error responses with `type`, `message`, `operation`
 | `POST` | `/phase3/security` | Security scan only |
 | `GET`  | `/phase3/pending` | List pending approvals |
 
-### Phase 4 — Execution
+### Phase 4, Execution
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -1153,17 +1068,17 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 **User prompt:** _"Fetch resumes from hr@team.com, shortlist by our hiring policy, schedule interviews with top candidates, and send rejection emails to the rest."_
 
 ### Phase 1: Planning
-1. **Pre-flight** — Not globally blocked → pass
-2. **Heuristic** — No regex match → escalate to LLM
-3. **Semantic classify** — `Intent=GOAL`, `complexity=8`, `domain=hr`, `risk=HIGH`
-4. **CoT plan** — Produces 5 steps:
+1. **Pre-flight**, Not globally blocked → pass
+2. **Heuristic**, No regex match → escalate to LLM
+3. **Semantic classify**, `Intent=GOAL`, `complexity=8`, `domain=hr`, `risk=HIGH`
+4. **CoT plan**, Produces 5 steps:
    - A: Fetch emails (Email Agent, `list_threads`)
    - B: Extract candidate data (Data Extraction Agent)
    - C: Apply hiring policy (Policy evaluation)
    - D: Schedule interviews (Calendar Agent, `create_event`)
    - E: Send rejections (Email Agent, `send_email`)
    - Dependencies: `A → B → C → (D, E)`
-5. **Atomize** — 5 `ExecutionAtom` objects with UUIDs + dependency graph
+5. **Atomize**, 5 `ExecutionAtom` objects with UUIDs + dependency graph
 
 ### Phase 2: Reasoning (parallel)
 - **Thread A:** Policy engine finds hiring policies via vector search; resource engine fetches rejection email template
@@ -1171,10 +1086,10 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 - **Result:** Atoms A/B/C enriched and APPROVED. Atom E marked PAUSED (send_email is HIGH risk + external recipients)
 
 ### Phase 3: Control
-1. **Privacy guard** — Scans for PII in candidate data → redacts phone numbers
-2. **Security guard** — Checks email content for prompt injection → pass
-3. **Reliability guard** — Estimates cost within budget → pass
-4. **Approval gate** — Atom E requires human approval → held in `approval_queue`
+1. **Privacy guard**, Scans for PII in candidate data → redacts phone numbers
+2. **Security guard**, Checks email content for prompt injection → pass
+3. **Reliability guard**, Estimates cost within budget → pass
+4. **Approval gate**, Atom E requires human approval → held in `approval_queue`
 
 ### Phase 4: Execution
 1. Execute A: Fetch 50 resume threads (Gmail, ~2s)
@@ -1185,10 +1100,10 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 6. Execute E: Send 40 rejection emails (Gmail, ~30s)
 
 ### Phase 5: Evaluation (background)
-1. **Validate** — 5/5 atoms succeeded
-2. **MDS** — ~99 minutes saved, MDS ≈ 250 points
-3. **Analytics** — Logged to `user_analytics_ledger`
-4. **Learning** — User edits rejection text → preference rule extracted and stored
+1. **Validate**, 5/5 atoms succeeded
+2. **MDS**, ~99 minutes saved, MDS ≈ 250 points
+3. **Analytics**, Logged to `user_analytics_ledger`
+4. **Learning**, User edits rejection text → preference rule extracted and stored
 
 ---
 
@@ -1262,3 +1177,7 @@ Return result summary
 ## License
 
 Private repository. All rights reserved.
+
+</details>
+
+<!-- presentation:end -->
