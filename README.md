@@ -1,3 +1,44 @@
+<!-- presentation:start -->
+<p align="center"><img src="https://raw.githubusercontent.com/therohitji/therohitji/main/repos/mr-elite-orchestrator.svg" width="100%" alt="Mr. Elite. A multi-agent orchestration engine: plain-language request in, policy-checked action out. 28,834 Lines of code, 151 Files, 2 Code areas, 2 Languages."></p>
+
+## What it is
+
+An execution runtime that plans, checks and runs work across agents.
+
+## Why it exists
+
+Agents can act, but nothing makes them think in order. This layer does.
+
+## How it works
+
+```mermaid
+flowchart LR
+  n0["Planning"]
+  n1["Reasoning"]
+  n2["Control"]
+  n3["Execution"]
+  n4["Evaluation"]
+  n0 --> n1 --> n2 --> n3 --> n4
+  n4 -.-> n0
+```
+
+## What's inside
+
+| Part | What |
+|---|---|
+| **Agents** | Email, calendar and summariser agents behind one orchestrator |
+| **Safety** | Policy checks and control before anything executes |
+| **Memory** | Shared state, so agents do not start from zero |
+
+**Stack:** Python, FastAPI, LangGraph, Gemini, Supabase
+
+---
+
+Built by [Rohit Swerashi](https://github.com/therohitji), Founder & CEO of [GeniOS](https://thegenios.com).
+<!-- presentation:end -->
+
+## Full documentation
+
 # MR ELITE — Autonomous Orchestration Engine
 
 > **Decision First → Validate → Control/Secure → Execute → Evaluate/Learn**
